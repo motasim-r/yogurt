@@ -94,4 +94,65 @@ describe('parseIronclawEventLine', () => {
       finalText: 'final answer',
     });
   });
+
+  it('maps chat delta events to assistant snapshot deltas', () => {
+    const line = JSON.stringify({
+      event: 'chat',
+      state: 'delta',
+      runId: 'run-5',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hello there' }],
+      },
+    });
+
+    const parsed = parseIronclawEventLine(line, null);
+    expect(parsed.events).toHaveLength(1);
+    expect(parsed.events[0]).toMatchObject({
+      kind: 'delta',
+      message: 'hello there',
+      snapshot: 'hello there',
+    });
+  });
+
+  it('maps chat final events and surfaces final text', () => {
+    const line = JSON.stringify({
+      event: 'chat',
+      state: 'final',
+      runId: 'run-6',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'final from chat' }],
+      },
+    });
+
+    const parsed = parseIronclawEventLine(line, null);
+    expect(parsed.events).toHaveLength(1);
+    expect(parsed.events[0]).toMatchObject({
+      kind: 'delta',
+      snapshot: 'final from chat',
+      finalText: 'final from chat',
+    });
+  });
+
+  it('extracts final text from top-level payloads and content-array fallback', () => {
+    const line = JSON.stringify({
+      event: 'result',
+      runId: 'run-7',
+      status: 'ok',
+      summary: 'completed',
+      payloads: [
+        {
+          content: [{ type: 'text', text: 'final via payload content' }],
+        },
+      ],
+    });
+
+    const parsed = parseIronclawEventLine(line, 'run-7');
+    expect(parsed.finalResult).toMatchObject({
+      ok: true,
+      runId: 'run-7',
+      finalText: 'final via payload content',
+    });
+  });
 });

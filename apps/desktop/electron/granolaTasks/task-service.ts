@@ -2994,6 +2994,7 @@ export class GranolaTaskService {
     this.emitTaskRunEvent(request.todoId, todo.runId ?? null, 'started', 'Task started in IronClaw.');
 
     let latestSummary = '';
+    let lastFinalEventText = '';
     const runHandle = this.ironclaw.startRun({
       prompt: request.prompt,
       agentId: this.ironclawAgentId,
@@ -3119,14 +3120,16 @@ export class GranolaTaskService {
 
         if (event.kind === 'delta') {
           running.lastDeltaAtMs = Date.now();
-          const merge = mergeAssistantBuffer(latestSummary, event.delta ?? event.message, event.snapshot);
+          const mergeDelta = event.delta ?? (event.snapshot ? undefined : event.message);
+          const mergeSnapshot = event.snapshot ?? (event.finalText ? event.message : undefined);
+          const merge = mergeAssistantBuffer(latestSummary, mergeDelta, mergeSnapshot);
           if (!merge.changed) {
             return;
           }
           latestSummary = merge.next;
           const normalized = clampText(latestSummary.trim(), 6000);
           current.publicSummary = normalized;
-          current.latestPublicStep = clampText((merge.emittedDelta || event.delta || '').trim() || normalized, 240);
+          current.latestPublicStep = clampText((merge.emittedDelta || mergeDelta || '').trim() || normalized, 240);
           current.updatedAt = nowIso();
 
           if (assistantMessageId) {
@@ -3143,7 +3146,7 @@ export class GranolaTaskService {
                 request.todoId,
                 running.runId,
                 assistantMessageId,
-                merge.emittedDelta || event.delta || event.message,
+                merge.emittedDelta || mergeDelta || event.message,
                 updatedMessage.content,
               );
             }
@@ -3151,13 +3154,14 @@ export class GranolaTaskService {
           }
 
           this.emitTaskChatStatus(request.todoId, running.runId, 'streaming', 'Streaming latest research…');
-          this.emitTaskRunEvent(request.todoId, running.runId, 'delta', merge.emittedDelta || event.message);
+          this.emitTaskRunEvent(request.todoId, running.runId, 'delta', merge.emittedDelta || mergeDelta || event.message);
           this.emitFeedUpdated();
           return;
         }
 
         if (event.finalText) {
           latestSummary = event.finalText;
+          lastFinalEventText = event.finalText;
         }
       },
     });
@@ -3216,10 +3220,18 @@ export class GranolaTaskService {
         this.activeExecutionTodoId = null;
         const cancelled = running?.cancelled === true;
         const summary = result.summary || (result.ok ? 'Execution completed.' : cancelled ? 'Execution cancelled.' : 'Execution failed.');
+        const resolvedFinalText = result.finalText || lastFinalEventText || latestSummary || null;
         await this.finalizeTaskExecution(request.todoId, {
           ...result,
           summary,
-          finalText: result.finalText || latestSummary || null,
+          finalText: resolvedFinalText,
+          finalTextSource: result.finalText
+            ? 'result_payload'
+            : lastFinalEventText
+              ? 'chat_final'
+              : latestSummary
+                ? 'stream_buffer'
+                : 'summary',
           cancelled,
           assistantMessageId: running?.assistantMessageId ?? assistantMessageId,
         });
@@ -3234,11 +3246,13 @@ export class GranolaTaskService {
         this.runningExecutions.delete(request.todoId);
         this.activeExecutionTodoId = null;
         const message = safeErrorMessage(error);
+        const resolvedFinalText = lastFinalEventText || latestSummary || null;
         await this.finalizeTaskExecution(request.todoId, {
           ok: false,
           runId: running?.runId ?? todo.runId,
           summary: message,
-          finalText: latestSummary || null,
+          finalText: resolvedFinalText,
+          finalTextSource: resolvedFinalText ? (lastFinalEventText ? 'chat_final' : 'stream_buffer') : 'summary',
           error: message,
           cancelled: running?.cancelled === true,
           assistantMessageId: running?.assistantMessageId ?? assistantMessageId,
@@ -3268,11 +3282,15 @@ export class GranolaTaskService {
       runId: string | null;
       summary: string;
       finalText: string | null;
+      finalTextSource?: 'result_payload' | 'chat_final' | 'stream_buffer' | 'summary';
       error?: string;
       cancelled?: boolean;
       assistantMessageId?: string | null;
     },
   ): Promise<void> {
+    const completedAtMs = Date.now();
+    const completedAt = new Date(completedAtMs).toISOString();
+    const finalMessageAt = new Date(completedAtMs + 1).toISOString();
     const completionPhase: TaskExecutionPhase = result.cancelled
       ? 'cancelled'
       : result.ok
@@ -3286,8 +3304,6 @@ export class GranolaTaskService {
       }
 
       ensureTodoTelemetry(todo);
-
-      const completedAt = nowIso();
       todo.updatedAt = completedAt;
       todo.runId = result.runId ?? todo.runId ?? null;
       todo.openclaw.lastRunId = todo.runId;
@@ -3337,24 +3353,36 @@ export class GranolaTaskService {
       todo.runState = inferTodoRunState(todo);
     });
 
+    let finalSource: 'result_payload' | 'chat_final' | 'stream_buffer' | 'summary' = result.finalTextSource ?? 'summary';
     await this.withChatStateWrite(async () => {
       if (result.assistantMessageId) {
         this.updateThreadMessage(
           todoId,
           result.assistantMessageId,
-          (message) => ({
-            ...message,
-            runId: result.runId ?? message.runId,
-            content: clampText(result.finalText || message.content || result.summary, 6000),
-            streaming: false,
-            statusTag: null,
-            trace: null,
-          }),
+          (message) => {
+            const hasStreamedText = Boolean(message.content && message.content.trim());
+            finalSource = result.finalText
+              ? result.finalTextSource ?? 'result_payload'
+              : hasStreamedText
+                ? 'stream_buffer'
+                : 'summary';
+            return {
+              ...message,
+              runId: result.runId ?? message.runId,
+              content: clampText(result.finalText || message.content || result.summary, 6000),
+              createdAt: finalMessageAt,
+              streaming: false,
+              statusTag: null,
+              trace: null,
+            };
+          },
           { emitRealtime: true },
         );
       } else {
+        finalSource = result.finalText ? result.finalTextSource ?? 'stream_buffer' : 'summary';
         this.appendThreadMessage(todoId, 'assistant', clampText(result.finalText || result.summary, 6000), {
           runId: result.runId,
+          createdAt: finalMessageAt,
           streaming: false,
           trace: null,
         });
@@ -3374,7 +3402,7 @@ export class GranolaTaskService {
             phase: completionPhase,
             groupId: result.runId,
           },
-          { persist: false },
+          { createdAt: completedAt, persist: false },
         );
       } else {
         this.appendThreadMessage(
@@ -3387,11 +3415,16 @@ export class GranolaTaskService {
               : `Run failed: ${result.error ?? result.summary}`,
           {
             runId: result.runId,
+            createdAt: completedAt,
             statusTag: completionPhase,
           },
         );
       }
     });
+
+    if (process.env.NODE_ENV !== 'production' && !process.env.VITEST) {
+      process.stderr.write(`[yogurt][task-final] source=${finalSource} runId=${result.runId ?? 'unknown'}\n`);
+    }
 
     this.emitFeedUpdated(true);
     this.emitTaskChatStatus(

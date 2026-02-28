@@ -87,6 +87,7 @@ interface IronclawRuntimeOptions {
   profile: string;
   binary?: string;
   timeoutMs?: number;
+  suppressGatewayAutoOpen?: boolean;
 }
 
 function parseToolPayload(value: unknown): IronclawToolPayload | null {
@@ -118,6 +119,49 @@ function describeToolEvent(tool: IronclawToolPayload): string {
     return tool.isError ? `${baseName} failed` : `${baseName} completed`;
   }
   return `${baseName} ${tool.phase || 'event'}`.trim();
+}
+
+function textFromContentArray(content: unknown): string | null {
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const chunks: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.text === 'string' && record.text.trim()) {
+      chunks.push(record.text);
+    }
+  }
+  const joined = chunks.join('');
+  return joined.trim() ? joined : null;
+}
+
+function textFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  if (typeof record.text === 'string' && record.text.trim()) {
+    return record.text;
+  }
+  if (typeof record.content === 'string' && record.content.trim()) {
+    return record.content;
+  }
+  return textFromContentArray(record.content);
+}
+
+function textFromChatMessage(message: unknown): string | null {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    return null;
+  }
+  const record = message as Record<string, unknown>;
+  if (typeof record.text === 'string' && record.text.trim()) {
+    return record.text;
+  }
+  return textFromContentArray(record.content);
 }
 
 export function parseIronclawEventLine(
@@ -249,6 +293,39 @@ export function parseIronclawEventLine(
     };
   }
 
+  if (eventType === 'chat') {
+    const state = typeof eventRecord.state === 'string' ? eventRecord.state : '';
+    const text = textFromChatMessage(eventRecord.message);
+    if (!text) {
+      return {
+        runId,
+        events,
+        finalResult: null,
+      };
+    }
+    if (state === 'delta') {
+      events.push({
+        runId,
+        kind: 'delta',
+        message: text,
+        snapshot: text,
+      });
+    } else if (state === 'final') {
+      events.push({
+        runId,
+        kind: 'delta',
+        message: text,
+        snapshot: text,
+        finalText: text,
+      });
+    }
+    return {
+      runId,
+      events,
+      finalResult: null,
+    };
+  }
+
   if (eventType === 'result') {
     const status = typeof eventRecord.status === 'string' ? eventRecord.status : 'error';
     const summary = typeof eventRecord.summary === 'string' ? eventRecord.summary : status;
@@ -256,12 +333,12 @@ export function parseIronclawEventLine(
       eventRecord.result && typeof eventRecord.result === 'object' && !Array.isArray(eventRecord.result)
         ? (eventRecord.result as Record<string, unknown>)
         : null;
-    const payloads = Array.isArray(result?.payloads) ? result.payloads : [];
-    const firstPayload =
-      payloads[0] && typeof payloads[0] === 'object' && !Array.isArray(payloads[0])
-        ? (payloads[0] as Record<string, unknown>)
-        : null;
-    const finalText = typeof firstPayload?.text === 'string' ? firstPayload.text : null;
+    const payloads = Array.isArray(result?.payloads)
+      ? result.payloads
+      : Array.isArray(eventRecord.payloads)
+        ? eventRecord.payloads
+        : [];
+    const finalText = payloads.map((payload) => textFromPayload(payload)).find((text) => Boolean(text)) ?? null;
 
     const ok = status === 'ok';
     const finalResult: IronclawRunResult = {
@@ -298,17 +375,25 @@ export class IronclawRuntime {
 
   private readonly timeoutMs: number;
 
+  private readonly suppressGatewayAutoOpen: boolean;
+
   constructor(options: IronclawRuntimeOptions) {
     this.profile = options.profile;
     this.binary = options.binary ?? 'ironclaw';
     this.timeoutMs = options.timeoutMs ?? 10_000;
+    this.suppressGatewayAutoOpen = options.suppressGatewayAutoOpen !== false;
   }
 
-  private async runCommand(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  private async runCommand(
+    args: string[],
+    options?: {
+      env?: NodeJS.ProcessEnv;
+    },
+  ): Promise<{ stdout: string; stderr: string }> {
     const result = await execFileAsync(this.binary, args, {
       timeout: this.timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
-      env: process.env,
+      env: options?.env ?? process.env,
     });
 
     return {
@@ -390,8 +475,20 @@ export class IronclawRuntime {
   }
 
   async reconnect(): Promise<IronclawProbe> {
+    const suppressAutoOpenEnv = this.suppressGatewayAutoOpen
+      ? {
+          ...process.env,
+          SSH_TTY: '1',
+          SSH_CLIENT: '127.0.0.1 0 0',
+          DISPLAY: '',
+          WAYLAND_DISPLAY: '',
+        }
+      : undefined;
+    if (this.suppressGatewayAutoOpen && process.env.NODE_ENV !== 'production' && !process.env.VITEST) {
+      process.stderr.write('[yogurt][ironclaw] reconnect using auto-open suppression env\n');
+    }
     try {
-      await this.runCommand(this.profileArgs('gateway', 'start'));
+      await this.runCommand(this.profileArgs('gateway', 'start'), suppressAutoOpenEnv ? { env: suppressAutoOpenEnv } : undefined);
     } catch {
       // Reconnect attempts still proceed to probe for a final state snapshot.
     }
@@ -418,6 +515,7 @@ export class IronclawRuntime {
 
     let lastRunId: string | null = null;
     let finalResult: IronclawRunResult | null = null;
+    let lastObservedFinalText: string | null = null;
     let stderrLines: string[] = [];
 
     const emit = (event: IronclawRunEvent): void => {
@@ -431,6 +529,9 @@ export class IronclawRuntime {
         finalResult = parsed.finalResult;
       }
       for (const event of parsed.events) {
+        if (typeof event.finalText === 'string' && event.finalText.trim()) {
+          lastObservedFinalText = event.finalText;
+        }
         emit(event);
       }
     });
@@ -452,8 +553,29 @@ export class IronclawRuntime {
         out.close();
         err.close();
 
+        const fallbackFinalText = typeof lastObservedFinalText === 'string' && lastObservedFinalText.trim()
+          ? lastObservedFinalText
+          : null;
+
         if (finalResult) {
+          if (!finalResult.finalText && fallbackFinalText) {
+            resolve({
+              ...finalResult,
+              finalText: fallbackFinalText,
+            });
+            return;
+          }
           resolve(finalResult);
+          return;
+        }
+
+        if (code === 0 && fallbackFinalText) {
+          resolve({
+            ok: true,
+            runId: lastRunId,
+            summary: 'completed',
+            finalText: fallbackFinalText,
+          });
           return;
         }
 

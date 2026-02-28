@@ -993,6 +993,168 @@ describe('GranolaTaskService', () => {
     await service.dispose();
   });
 
+  it('uses chat-final fallback when result payload text is absent and pins final assistant to completion', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Chat final fallback task',
+              description: 'Verify final answer fallback.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-final-fallback', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const done = deferred<{ ok: boolean; runId: string; summary: string; finalText: string | null }>();
+    let emitRunEvent: ((event: Record<string, unknown>) => void) | undefined;
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: {
+        startRun: ReturnType<typeof vi.fn>;
+      };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(({ onEvent: callback }: { onEvent: (event: Record<string, unknown>) => void }) => {
+      emitRunEvent = callback;
+      return {
+        cancel: vi.fn(),
+        done: done.promise,
+      };
+    });
+
+    const started = await service.tasksStart(String(todoId));
+    expect(started.ok).toBe(true);
+    await waitUntil(() => typeof emitRunEvent === 'function');
+    if (!emitRunEvent) {
+      throw new Error('Missing onEvent callback');
+    }
+
+    emitRunEvent({
+      runId: 'run-final-fallback',
+      kind: 'delta',
+      message: 'Progress update',
+      delta: 'Progress update',
+      snapshot: 'Progress update',
+    });
+    emitRunEvent({
+      runId: 'run-final-fallback',
+      kind: 'delta',
+      message: 'Final answer from chat final event.',
+      snapshot: 'Final answer from chat final event.',
+      finalText: 'Final answer from chat final event.',
+    });
+
+    done.resolve({
+      ok: true,
+      runId: 'run-final-fallback',
+      summary: 'completed',
+      finalText: null,
+    });
+
+    await waitUntil(() => service.getFeed().activeRunTodoId === null);
+    const thread = await service.tasksGetThread(String(todoId), null, 120);
+    const assistant = [...thread.messages].reverse().find((message) => message.role === 'assistant');
+    const completionTrace = [...thread.messages].reverse().find((message) => message.trace?.kind === 'phase' && message.trace.phase === 'completed');
+
+    expect(assistant?.content).toBe('Final answer from chat final event.');
+    expect(assistant?.streaming).toBe(false);
+    expect(assistant && completionTrace ? Date.parse(assistant.createdAt) > Date.parse(completionTrace.createdAt) : false).toBe(true);
+
+    await service.dispose();
+  });
+
+  it('does not open external browser windows when starting a task run', async () => {
+    const dataDir = await makeTempDir();
+    const openExternal = vi.fn(async () => {});
+    const service = new GranolaTaskService({
+      dataDir,
+      openExternal,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Background run task',
+              description: 'Ensure no external open on start.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'medium',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-no-open', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: {
+        startRun: ReturnType<typeof vi.fn>;
+      };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-no-open',
+        summary: 'completed',
+        finalText: 'done',
+      }),
+    }));
+
+    const started = await service.tasksStart(String(todoId));
+    expect(started.ok).toBe(true);
+    await waitUntil(() => service.getFeed().activeRunTodoId === null);
+    expect(openExternal).not.toHaveBeenCalled();
+
+    await service.dispose();
+  });
+
   it('records thought/tool/source traces and completion phase for timeline chat', async () => {
     const dataDir = await makeTempDir();
     const service = new GranolaTaskService({
