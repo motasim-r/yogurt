@@ -1,7 +1,7 @@
 // @vitest-environment node
 
-import { describe, expect, it } from 'vitest';
-import { parseIronclawEventLine } from './ironclaw-runtime.js';
+import { describe, expect, it, vi } from 'vitest';
+import { IronclawRuntime, buildIronclawRunArgs, parseIronclawEventLine } from './ironclaw-runtime.js';
 
 describe('parseIronclawEventLine', () => {
   it('prefers assistant delta while keeping snapshot when both are present', () => {
@@ -88,10 +88,33 @@ describe('parseIronclawEventLine', () => {
       runId: 'run-4',
       summary: 'completed',
       finalText: 'final answer',
+      finalTextSource: 'result_payload_last',
+      payloadTextCount: 1,
     });
     expect(parsed.events[0]).toMatchObject({
       kind: 'completed',
       finalText: 'final answer',
+    });
+  });
+
+  it('uses the last non-empty payload text as final output', () => {
+    const line = JSON.stringify({
+      event: 'result',
+      runId: 'run-4b',
+      status: 'ok',
+      summary: 'completed',
+      result: {
+        payloads: [{ text: 'Progress: step 1/4' }, { text: 'Progress: step 2/4' }, { text: 'Real final answer' }],
+      },
+    });
+
+    const parsed = parseIronclawEventLine(line, 'run-4b');
+    expect(parsed.finalResult).toMatchObject({
+      ok: true,
+      runId: 'run-4b',
+      finalText: 'Real final answer',
+      finalTextSource: 'result_payload_last',
+      payloadTextCount: 3,
     });
   });
 
@@ -154,5 +177,57 @@ describe('parseIronclawEventLine', () => {
       runId: 'run-7',
       finalText: 'final via payload content',
     });
+  });
+});
+
+describe('buildIronclawRunArgs', () => {
+  it('includes session key, lane, and thinking flags when provided', () => {
+    const args = buildIronclawRunArgs('ironclaw', {
+      prompt: 'run task',
+      agentId: 'main',
+      sessionKey: 'agent:main:web:yogurt:todo-1',
+      lane: 'web',
+      thinking: 'minimal',
+    });
+
+    expect(args).toEqual([
+      '--profile',
+      'ironclaw',
+      'agent',
+      '--agent',
+      'main',
+      '--message',
+      'run task',
+      '--stream-json',
+      '--session-key',
+      'agent:main:web:yogurt:todo-1',
+      '--lane',
+      'web',
+      '--thinking',
+      'minimal',
+    ]);
+  });
+});
+
+describe('IronclawRuntime.reconnect', () => {
+  it('skips gateway start when probe is already connected', async () => {
+    const runtime = new IronclawRuntime({ profile: 'ironclaw' }) as unknown as {
+      probe: () => Promise<{ connected: boolean; gatewayUrl: string | null; dashboardUrl: string | null; message: string | null }>;
+      runCommand: (args: string[]) => Promise<{ stdout: string; stderr: string }>;
+      reconnect: () => Promise<{ connected: boolean; gatewayUrl: string | null; dashboardUrl: string | null; message: string | null }>;
+    };
+
+    const probe = vi.spyOn(runtime, 'probe').mockResolvedValue({
+      connected: true,
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789',
+      message: null,
+    });
+    const runCommand = vi.spyOn(runtime, 'runCommand');
+
+    const result = await runtime.reconnect();
+    expect(result.connected).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(runCommand).not.toHaveBeenCalled();
   });
 });

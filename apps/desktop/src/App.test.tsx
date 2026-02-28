@@ -473,6 +473,45 @@ describe('App task copilot', () => {
     expect(screen.queryByText(/Progress update Progress update/i)).not.toBeInTheDocument();
   });
 
+  it('shows auto-retry trace rows in the timeline when retry occurs', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', [
+      {
+        messageId: 'retry-trace',
+        todoId: 'todo-1',
+        runId: 'run-retry',
+        role: 'status',
+        content: 'Auto-retry triggered',
+        createdAt: '2026-02-28T10:06:00.000Z',
+        streaming: false,
+        statusTag: 'working',
+        trace: {
+          kind: 'phase',
+          title: 'Auto-retry triggered',
+          detail: 'Incomplete progress-only output detected. Retrying once for a complete final answer.',
+          phase: 'working',
+          groupId: 'run-retry',
+        },
+      },
+      {
+        messageId: 'retry-final',
+        todoId: 'todo-1',
+        runId: 'run-retry',
+        role: 'assistant',
+        content: '## Final result\n- Complete findings after retry',
+        createdAt: '2026-02-28T10:06:30.000Z',
+        streaming: false,
+        statusTag: null,
+      },
+    ]);
+
+    render(<App />);
+    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+
+    expect(await screen.findByText('Auto-retry triggered')).toBeInTheDocument();
+    expect(screen.getByText(/Complete findings after retry/i)).toBeInTheDocument();
+  });
+
   it('hides warning banner persistently when dismissed', async () => {
     const user = userEvent.setup();
     state.feed.warning = 'Using cached richer notes for 5 meeting(s).';

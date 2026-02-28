@@ -1,7 +1,10 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { promisify } from 'node:util';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -51,6 +54,7 @@ import type {
 } from '../../src/shared/types.js';
 
 const URL_MATCHER = /https?:\/\/[^\s"'`<>]+/g;
+const execFileAsync = promisify(execFile);
 
 interface GranolaTaskServiceOptions {
   dataDir: string;
@@ -67,6 +71,9 @@ interface GranolaTaskServiceOptions {
   callbackPort?: number;
   callbackMaxPort?: number;
   pendingAuthTtlMs?: number;
+  autoDisableLegacyGatewayService?: boolean;
+  executionSessionScope?: 'per_task' | 'per_run' | 'shared_main';
+  progressOnlyAutoRetry?: 'off' | 'once' | 'twice';
   openExternal?: (url: string) => Promise<void> | void;
   allowUnauthenticatedExtraction?: boolean;
   extractTodosForMeeting?: (meeting: GranolaMeeting, prompt: string) => Promise<string>;
@@ -151,6 +158,7 @@ interface ExecutionQueueRequest {
   executionId: string;
   todoId: string;
   prompt: string;
+  retryCount: number;
   requestedAt: string;
   source: 'start' | 'chat';
 }
@@ -573,6 +581,59 @@ function isRateLimitLikeMessage(message: string): boolean {
   return lowered.includes('rate limit') || lowered.includes('too many requests') || lowered.includes('429');
 }
 
+function maxProgressRetryAttempts(mode: 'off' | 'once' | 'twice'): number {
+  if (mode === 'twice') {
+    return 2;
+  }
+  if (mode === 'once') {
+    return 1;
+  }
+  return 0;
+}
+
+function progressCheckpointLine(value: string): string | null {
+  const lines = value
+    .split('\n')
+    .map((item) => item.replace(/\s+/g, ' ').trim())
+    .filter((item) => item.length > 0);
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const progressLine =
+    [...lines]
+      .reverse()
+      .find((item) =>
+        /(progress|step\s*\d+\s*\/\s*\d+|working|searching|fetching|running|queued|started|thinking)/i.test(item),
+      ) ?? lines[lines.length - 1];
+  return progressLine ? clampText(progressLine, 320) : null;
+}
+
+function isProgressOnlyFinal(value: string | null | undefined): boolean {
+  const normalized = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized.length > 420) {
+    return false;
+  }
+  if (/https?:\/\//i.test(normalized)) {
+    return false;
+  }
+  if (/\b(summary|findings|conclusion|next steps|recommend(?:ed|ation)|sources?)\b/i.test(normalized) && normalized.length > 160) {
+    return false;
+  }
+
+  const progressSignals = [
+    /\bprogress update\b/i,
+    /\bstep\s*\d+\s*\/\s*\d+\b/i,
+    /\b(started|starting|working|thinking|queued|running)\b/i,
+    /\b(pulling|gathering|checking|defining)\b/i,
+  ];
+  const signalCount = progressSignals.reduce((total, matcher) => total + (matcher.test(normalized) ? 1 : 0), 0);
+  return signalCount > 0;
+}
+
 function defaultSyncMetadata(): SyncMetadata {
   return {
     detailHydratedAtByMeetingId: {},
@@ -755,6 +816,14 @@ export class GranolaTaskService {
 
   private readonly canonicalProjectPath: string;
 
+  private readonly autoDisableLegacyGatewayService: boolean;
+
+  private readonly executionSessionScope: 'per_task' | 'per_run' | 'shared_main';
+
+  private readonly progressOnlyAutoRetry: 'off' | 'once' | 'twice';
+
+  private readonly legacyGatewayCleanupMarkerPath: string;
+
   private readonly ironclaw: IronclawRuntime;
 
   private readonly chatTimelineV2Enabled: boolean;
@@ -865,6 +934,8 @@ export class GranolaTaskService {
     copiedFiles: [],
   };
 
+  private legacyGatewayCleanupAttempted = false;
+
   constructor(private readonly options: GranolaTaskServiceOptions) {
     this.mcpUrl = options.mcpUrl ?? 'https://mcp.granola.ai/mcp';
     this.liveRequestTimeoutMs = options.liveRequestTimeoutMs ?? 12_000;
@@ -876,9 +947,14 @@ export class GranolaTaskService {
     this.ironclawAgentId = options.ironclawAgentId ?? 'main';
     this.legacyDataDir = options.legacyDataDir ?? '/Users/motasimrahman/Desktop/granola-openclaw/data';
     this.canonicalProjectPath = options.canonicalProjectPath ?? process.cwd();
+    this.autoDisableLegacyGatewayService = options.autoDisableLegacyGatewayService !== false;
+    this.executionSessionScope = options.executionSessionScope ?? 'per_task';
+    this.progressOnlyAutoRetry = options.progressOnlyAutoRetry ?? 'once';
+    this.legacyGatewayCleanupMarkerPath = path.join(options.dataDir, '.legacy-launchagent-cleanup-v1.json');
     this.chatTimelineV2Enabled = process.env.CHAT_TIMELINE_V2 !== '0';
     this.ironclaw = new IronclawRuntime({
       profile: this.ironclawProfile,
+      suppressGatewayAutoOpen: true,
     });
 
     const tokenKey = options.tokenEncryptionKey ?? this.deriveTokenEncryptionKey(options.dataDir);
@@ -928,6 +1004,122 @@ export class GranolaTaskService {
     this.emitRealtimeEvent({ type: 'tasks-feed-updated' });
   }
 
+  private pushRuntimeWarning(summary: string, detail?: string): void {
+    const lines = compactWarningLines([summary, detail ?? '', ...this.cacheState.warnings, ...this.cacheState.warningDetails]);
+    if (lines.length === 0) {
+      return;
+    }
+    this.cacheState.warnings = lines.slice(0, 1);
+    this.cacheState.warningDetails = lines.slice(1, 4);
+    this.emitFeedUpdated(true);
+  }
+
+  private async launchctl(args: string[]): Promise<{ ok: boolean; output: string }> {
+    try {
+      const result = await execFileAsync('launchctl', args, {
+        timeout: 8_000,
+        maxBuffer: 1024 * 1024,
+      });
+      return {
+        ok: true,
+        output: `${String(result.stdout ?? '')}\n${String(result.stderr ?? '')}`.trim(),
+      };
+    } catch (error) {
+      const stderr = error && typeof error === 'object' && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : '';
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        output: `${stderr}\n${message}`.trim(),
+      };
+    }
+  }
+
+  private buildExecutionSessionKey(todoId: string, executionId: string): string {
+    if (this.executionSessionScope === 'shared_main') {
+      return `agent:${this.ironclawAgentId}:main`;
+    }
+    if (this.executionSessionScope === 'per_run') {
+      return `agent:${this.ironclawAgentId}:web:yogurt:${todoId}:${executionId}`;
+    }
+    return `agent:${this.ironclawAgentId}:web:yogurt:${todoId}`;
+  }
+
+  private executionLane(): 'main' | 'web' {
+    return this.executionSessionScope === 'shared_main' ? 'main' : 'web';
+  }
+
+  private retryPrompt(prompt: string): string {
+    return [
+      prompt,
+      '',
+      'Previous attempt ended with progress-only output.',
+      'Continue from current state without repeating Step 1.',
+      'Return concrete final findings now, with links/sources where possible.',
+    ].join('\n');
+  }
+
+  private async ensureLegacyGatewayLaunchAgentDisabledOnce(): Promise<void> {
+    if (!this.autoDisableLegacyGatewayService || this.legacyGatewayCleanupAttempted) {
+      return;
+    }
+    this.legacyGatewayCleanupAttempted = true;
+    if (process.platform !== 'darwin' || typeof process.getuid !== 'function') {
+      return;
+    }
+
+    try {
+      const markerRaw = await readFile(this.legacyGatewayCleanupMarkerPath, 'utf8');
+      const marker = JSON.parse(markerRaw) as { attempted?: boolean };
+      if (marker?.attempted) {
+        return;
+      }
+    } catch {
+      // Marker absent or malformed; continue with cleanup attempt.
+    }
+
+    const uid = process.getuid();
+    const target = `gui/${uid}/ai.granola-openclaw`;
+    const bootout = await this.launchctl(['bootout', target]);
+    const disable = await this.launchctl(['disable', target]);
+    const disableOutput = disable.output.toLowerCase();
+    const disabled =
+      disable.ok || disableOutput.includes('disabled') || disableOutput.includes('already') || disableOutput.includes('not found');
+
+    if (disabled) {
+      this.pushRuntimeWarning(
+        'Disabled legacy ai.granola-openclaw to prevent routing conflicts.',
+        bootout.ok ? 'Legacy LaunchAgent cleanup completed.' : 'Legacy LaunchAgent was already inactive.',
+      );
+    } else {
+      const manualCommand = `launchctl disable ${target}`;
+      const detail = disable.output
+        ? `Automatic cleanup failed (${clampText(disable.output, 180)}). Run: ${manualCommand}`
+        : `Automatic cleanup failed. Run: ${manualCommand}`;
+      this.pushRuntimeWarning('Legacy ai.granola-openclaw may still interfere with routing.', detail);
+    }
+
+    try {
+      await mkdir(path.dirname(this.legacyGatewayCleanupMarkerPath), { recursive: true });
+      await writeFile(
+        this.legacyGatewayCleanupMarkerPath,
+        JSON.stringify(
+          {
+            attempted: true,
+            attemptedAt: nowIso(),
+            disabled,
+            bootoutOk: bootout.ok,
+            disableOutput: clampText(disable.output, 400),
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+    } catch {
+      // Best-effort marker persistence; failure should not block runtime startup.
+    }
+  }
+
   private async refreshExecutorState(force = false): Promise<TaskExecutorConnection> {
     const checkedAtMs = parseIsoDate(this.executorState.lastCheckedAt);
     if (!force && checkedAtMs != null && Date.now() - checkedAtMs < 15_000 && this.executorState.state !== 'unknown') {
@@ -961,6 +1153,7 @@ export class GranolaTaskService {
     };
     this.emitFeedUpdated(true);
 
+    await this.ensureLegacyGatewayLaunchAgentDisabledOnce();
     const result = await this.ironclaw.reconnect();
     this.executorState = {
       ...this.executorState,
@@ -1458,6 +1651,43 @@ export class GranolaTaskService {
         content: nextTrace.title,
         streaming: false,
         statusTag: 'thinking',
+        trace: nextTrace,
+      }),
+      { emitRealtime: true },
+    );
+    if (updated) {
+      this.queueChatPersist();
+      return existingMessageId;
+    }
+    return this.appendTraceMessage(todoId, runId, nextTrace).messageId;
+  }
+
+  private upsertProgressTrace(
+    todoId: string,
+    runId: string | null,
+    groupId: string,
+    detail: string,
+    existingMessageId: string | null,
+  ): string {
+    const nextTrace: TaskChatTrace = {
+      kind: 'phase',
+      title: 'Working on task',
+      detail: clampText(detail.trim(), 1200),
+      groupId,
+      phase: 'streaming',
+    };
+    if (!existingMessageId) {
+      return this.appendTraceMessage(todoId, runId, nextTrace).messageId;
+    }
+    const updated = this.updateThreadMessage(
+      todoId,
+      existingMessageId,
+      (message) => ({
+        ...message,
+        runId: runId ?? message.runId,
+        content: nextTrace.title,
+        streaming: false,
+        statusTag: 'streaming',
         trace: nextTrace,
       }),
       { emitRealtime: true },
@@ -1982,6 +2212,7 @@ export class GranolaTaskService {
     await this.loadPersistedCacheState();
     await this.loadPersistedTodoState();
     await this.loadPersistedChatState();
+    await this.ensureLegacyGatewayLaunchAgentDisabledOnce();
     await this.ensureThreadsFromTodos();
     await this.recoverInterruptedExecutions();
 
@@ -2993,11 +3224,18 @@ export class GranolaTaskService {
     this.emitTaskChatStatus(request.todoId, todo.runId ?? null, 'started', 'Run started.');
     this.emitTaskRunEvent(request.todoId, todo.runId ?? null, 'started', 'Task started in IronClaw.');
 
-    let latestSummary = '';
-    let lastFinalEventText = '';
+    let latestAssistantSnapshot = '';
+    let lastChatFinalText = '';
+    let resultPayloadFinalText = '';
+    let progressTraceMessageId: string | null = null;
+    let lastProgressCheckpointAtMs = 0;
+    const progressGroupId = `progress-${request.executionId}`;
     const runHandle = this.ironclaw.startRun({
       prompt: request.prompt,
       agentId: this.ironclawAgentId,
+      sessionKey: this.buildExecutionSessionKey(request.todoId, request.executionId),
+      lane: this.executionLane(),
+      thinking: 'minimal',
       onEvent: (event) => {
         const current = this.findTodo(request.todoId);
         const running = this.runningExecutions.get(request.todoId);
@@ -3024,6 +3262,17 @@ export class GranolaTaskService {
             this.updateThreadMessage(
               request.todoId,
               thinkingTraceMessageId,
+              (message) => ({
+                ...message,
+                runId: event.runId,
+              }),
+              { emitRealtime: true },
+            );
+          }
+          if (progressTraceMessageId) {
+            this.updateThreadMessage(
+              request.todoId,
+              progressTraceMessageId,
               (message) => ({
                 ...message,
                 runId: event.runId,
@@ -3122,15 +3371,21 @@ export class GranolaTaskService {
           running.lastDeltaAtMs = Date.now();
           const mergeDelta = event.delta ?? (event.snapshot ? undefined : event.message);
           const mergeSnapshot = event.snapshot ?? (event.finalText ? event.message : undefined);
-          const merge = mergeAssistantBuffer(latestSummary, mergeDelta, mergeSnapshot);
+          const merge = mergeAssistantBuffer(latestAssistantSnapshot, mergeDelta, mergeSnapshot);
           if (!merge.changed) {
+            if (event.finalText && event.finalText.trim()) {
+              lastChatFinalText = event.finalText;
+            }
             return;
           }
-          latestSummary = merge.next;
-          const normalized = clampText(latestSummary.trim(), 6000);
+          latestAssistantSnapshot = merge.next;
+          const normalized = clampText(latestAssistantSnapshot.trim(), 6000);
           current.publicSummary = normalized;
           current.latestPublicStep = clampText((merge.emittedDelta || mergeDelta || '').trim() || normalized, 240);
           current.updatedAt = nowIso();
+          if (event.finalText && event.finalText.trim()) {
+            lastChatFinalText = event.finalText;
+          }
 
           if (assistantMessageId) {
             const updatedMessage = this.updateThreadMessage(request.todoId, assistantMessageId, (message) => ({
@@ -3153,15 +3408,29 @@ export class GranolaTaskService {
             this.queueChatPersist();
           }
 
+          if (this.chatTimelineV2Enabled) {
+            const checkpoint = progressCheckpointLine(merge.emittedDelta || mergeDelta || normalized);
+            const nowMs = Date.now();
+            if (checkpoint && nowMs - lastProgressCheckpointAtMs >= 1_200) {
+              progressTraceMessageId = this.upsertProgressTrace(
+                request.todoId,
+                running.runId,
+                progressGroupId,
+                checkpoint,
+                progressTraceMessageId,
+              );
+              lastProgressCheckpointAtMs = nowMs;
+            }
+          }
+
           this.emitTaskChatStatus(request.todoId, running.runId, 'streaming', 'Streaming latest research…');
           this.emitTaskRunEvent(request.todoId, running.runId, 'delta', merge.emittedDelta || mergeDelta || event.message);
           this.emitFeedUpdated();
           return;
         }
 
-        if (event.finalText) {
-          latestSummary = event.finalText;
-          lastFinalEventText = event.finalText;
+        if ((event.kind === 'completed' || event.kind === 'failed') && event.finalText && event.finalText.trim()) {
+          resultPayloadFinalText = event.finalText;
         }
       },
     });
@@ -3174,6 +3443,15 @@ export class GranolaTaskService {
       const elapsedSeconds = Math.floor((Date.now() - running.startedAtMs) / 1000);
       const sinceDeltaSeconds = Math.floor((Date.now() - running.lastDeltaAtMs) / 1000);
       if (sinceDeltaSeconds >= 10) {
+        if (this.chatTimelineV2Enabled) {
+          progressTraceMessageId = this.upsertProgressTrace(
+            request.todoId,
+            running.runId,
+            progressGroupId,
+            `Still working… ${elapsedSeconds}s elapsed.`,
+            progressTraceMessageId,
+          );
+        }
         this.emitTaskChatStatus(request.todoId, running.runId, 'working', `Working… ${elapsedSeconds}s`);
       }
     }, 10_000);
@@ -3220,18 +3498,54 @@ export class GranolaTaskService {
         this.activeExecutionTodoId = null;
         const cancelled = running?.cancelled === true;
         const summary = result.summary || (result.ok ? 'Execution completed.' : cancelled ? 'Execution cancelled.' : 'Execution failed.');
-        const resolvedFinalText = result.finalText || lastFinalEventText || latestSummary || null;
+        const resolvedFinalText = lastChatFinalText || result.finalText || latestAssistantSnapshot || result.summary || null;
+        const resolvedFinalSource = lastChatFinalText
+          ? 'chat_final'
+          : result.finalText
+            ? result.finalTextSource ?? 'result_payload_last'
+            : latestAssistantSnapshot
+              ? 'stream_buffer'
+              : 'summary';
+        const retryBudget = maxProgressRetryAttempts(this.progressOnlyAutoRetry);
+        const progressOnly = isProgressOnlyFinal(resolvedFinalText);
+        if (!cancelled && progressOnly && request.retryCount < retryBudget) {
+          await this.withChatStateWrite(async () => {
+            this.appendTraceMessage(request.todoId, result.runId ?? running?.runId ?? todo.runId ?? null, {
+              kind: 'phase',
+              title: 'Auto-retry triggered',
+              detail: 'Incomplete progress-only output detected. Retrying once for a complete final answer.',
+              phase: 'working',
+              groupId: request.executionId,
+            });
+          });
+          this.emitTaskChatStatus(
+            request.todoId,
+            result.runId ?? running?.runId ?? todo.runId ?? null,
+            'working',
+            'Auto-retrying because the first result looked incomplete.',
+          );
+          this.executionQueue.unshift({
+            ...request,
+            executionId: randomUUID(),
+            prompt: this.retryPrompt(request.prompt),
+            retryCount: request.retryCount + 1,
+            requestedAt: nowIso(),
+          });
+          await this.processQueuedExecutions();
+          return;
+        }
+
+        const incompleteAfterRetry = !cancelled && progressOnly && retryBudget > 0 && request.retryCount >= retryBudget;
+        const incompleteMessage = incompleteAfterRetry
+          ? 'Run ended with progress-only output after automatic retry.'
+          : null;
         await this.finalizeTaskExecution(request.todoId, {
           ...result,
-          summary,
+          ok: incompleteAfterRetry ? false : result.ok,
+          summary: incompleteMessage ?? summary,
           finalText: resolvedFinalText,
-          finalTextSource: result.finalText
-            ? 'result_payload'
-            : lastFinalEventText
-              ? 'chat_final'
-              : latestSummary
-                ? 'stream_buffer'
-                : 'summary',
+          finalTextSource: resolvedFinalSource,
+          error: incompleteMessage ?? result.error,
           cancelled,
           assistantMessageId: running?.assistantMessageId ?? assistantMessageId,
         });
@@ -3246,13 +3560,19 @@ export class GranolaTaskService {
         this.runningExecutions.delete(request.todoId);
         this.activeExecutionTodoId = null;
         const message = safeErrorMessage(error);
-        const resolvedFinalText = lastFinalEventText || latestSummary || null;
+        const resolvedFinalText = lastChatFinalText || resultPayloadFinalText || latestAssistantSnapshot || null;
         await this.finalizeTaskExecution(request.todoId, {
           ok: false,
           runId: running?.runId ?? todo.runId,
           summary: message,
           finalText: resolvedFinalText,
-          finalTextSource: resolvedFinalText ? (lastFinalEventText ? 'chat_final' : 'stream_buffer') : 'summary',
+          finalTextSource: resolvedFinalText
+            ? lastChatFinalText
+              ? 'chat_final'
+              : resultPayloadFinalText
+                ? 'result_payload_last'
+                : 'stream_buffer'
+            : 'summary',
           error: message,
           cancelled: running?.cancelled === true,
           assistantMessageId: running?.assistantMessageId ?? assistantMessageId,
@@ -3282,7 +3602,12 @@ export class GranolaTaskService {
       runId: string | null;
       summary: string;
       finalText: string | null;
-      finalTextSource?: 'result_payload' | 'chat_final' | 'stream_buffer' | 'summary';
+      finalTextSource?:
+        | 'result_payload_last'
+        | 'chat_final'
+        | 'stream_buffer'
+        | 'summary'
+        | 'fallback_summary';
       error?: string;
       cancelled?: boolean;
       assistantMessageId?: string | null;
@@ -3353,7 +3678,8 @@ export class GranolaTaskService {
       todo.runState = inferTodoRunState(todo);
     });
 
-    let finalSource: 'result_payload' | 'chat_final' | 'stream_buffer' | 'summary' = result.finalTextSource ?? 'summary';
+    let finalSource: 'result_payload_last' | 'chat_final' | 'stream_buffer' | 'summary' | 'fallback_summary' =
+      result.finalTextSource ?? 'summary';
     await this.withChatStateWrite(async () => {
       if (result.assistantMessageId) {
         this.updateThreadMessage(
@@ -3362,7 +3688,7 @@ export class GranolaTaskService {
           (message) => {
             const hasStreamedText = Boolean(message.content && message.content.trim());
             finalSource = result.finalText
-              ? result.finalTextSource ?? 'result_payload'
+              ? result.finalTextSource ?? 'result_payload_last'
               : hasStreamedText
                 ? 'stream_buffer'
                 : 'summary';
@@ -3516,6 +3842,7 @@ export class GranolaTaskService {
         executionId: randomUUID(),
         todoId,
         prompt,
+        retryCount: 0,
         requestedAt: nowIso(),
         source: 'chat',
       },
@@ -3578,6 +3905,7 @@ export class GranolaTaskService {
         executionId: randomUUID(),
         todoId,
         prompt,
+        retryCount: 0,
         requestedAt: nowIso(),
         source: 'start',
       },

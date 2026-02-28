@@ -50,6 +50,8 @@ export interface IronclawRunResult {
   runId: string | null;
   summary: string;
   finalText: string | null;
+  finalTextSource?: 'chat_final' | 'result_payload_last' | 'fallback_summary';
+  payloadTextCount?: number;
   error?: string;
 }
 
@@ -77,9 +79,12 @@ export interface IronclawRunHandle {
   done: Promise<IronclawRunResult>;
 }
 
-interface IronclawRunOptions {
+export interface IronclawRunOptions {
   prompt: string;
   agentId: string;
+  sessionKey?: string;
+  lane?: 'main' | 'web' | 'subagent' | 'cron' | 'nested';
+  thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high';
   onEvent: (event: IronclawRunEvent) => void;
 }
 
@@ -88,6 +93,23 @@ interface IronclawRuntimeOptions {
   binary?: string;
   timeoutMs?: number;
   suppressGatewayAutoOpen?: boolean;
+}
+
+export function buildIronclawRunArgs(
+  profile: string,
+  options: Pick<IronclawRunOptions, 'prompt' | 'agentId' | 'sessionKey' | 'lane' | 'thinking'>,
+): string[] {
+  const args = ['--profile', profile, 'agent', '--agent', options.agentId, '--message', options.prompt, '--stream-json'];
+  if (typeof options.sessionKey === 'string' && options.sessionKey.trim()) {
+    args.push('--session-key', options.sessionKey.trim());
+  }
+  if (typeof options.lane === 'string' && options.lane.trim()) {
+    args.push('--lane', options.lane.trim());
+  }
+  if (typeof options.thinking === 'string' && options.thinking.trim()) {
+    args.push('--thinking', options.thinking.trim());
+  }
+  return args;
 }
 
 function parseToolPayload(value: unknown): IronclawToolPayload | null {
@@ -338,7 +360,10 @@ export function parseIronclawEventLine(
       : Array.isArray(eventRecord.payloads)
         ? eventRecord.payloads
         : [];
-    const finalText = payloads.map((payload) => textFromPayload(payload)).find((text) => Boolean(text)) ?? null;
+    const payloadTexts = payloads
+      .map((payload) => textFromPayload(payload))
+      .filter((text): text is string => typeof text === 'string' && text.trim().length > 0);
+    const finalText = payloadTexts[payloadTexts.length - 1] ?? null;
 
     const ok = status === 'ok';
     const finalResult: IronclawRunResult = {
@@ -346,6 +371,8 @@ export function parseIronclawEventLine(
       runId,
       summary,
       finalText,
+      finalTextSource: finalText ? 'result_payload_last' : 'fallback_summary',
+      payloadTextCount: payloadTexts.length,
       error: ok ? undefined : summary,
     };
     events.push({
@@ -475,6 +502,11 @@ export class IronclawRuntime {
   }
 
   async reconnect(): Promise<IronclawProbe> {
+    const preflight = await this.probe();
+    if (preflight.connected) {
+      return preflight;
+    }
+
     const suppressAutoOpenEnv = this.suppressGatewayAutoOpen
       ? {
           ...process.env,
@@ -488,7 +520,10 @@ export class IronclawRuntime {
       process.stderr.write('[yogurt][ironclaw] reconnect using auto-open suppression env\n');
     }
     try {
-      await this.runCommand(this.profileArgs('gateway', 'start'), suppressAutoOpenEnv ? { env: suppressAutoOpenEnv } : undefined);
+      await this.runCommand(
+        this.profileArgs('gateway', 'start'),
+        suppressAutoOpenEnv ? { env: suppressAutoOpenEnv } : undefined,
+      );
     } catch {
       // Reconnect attempts still proceed to probe for a final state snapshot.
     }
@@ -496,14 +531,7 @@ export class IronclawRuntime {
   }
 
   startRun(options: IronclawRunOptions): IronclawRunHandle {
-    const args = this.profileArgs(
-      'agent',
-      '--agent',
-      options.agentId,
-      '--message',
-      options.prompt,
-      '--stream-json',
-    );
+    const args = buildIronclawRunArgs(this.profile, options);
 
     const child = spawn(this.binary, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -515,7 +543,7 @@ export class IronclawRuntime {
 
     let lastRunId: string | null = null;
     let finalResult: IronclawRunResult | null = null;
-    let lastObservedFinalText: string | null = null;
+    let lastObservedChatFinalText: string | null = null;
     let stderrLines: string[] = [];
 
     const emit = (event: IronclawRunEvent): void => {
@@ -529,8 +557,8 @@ export class IronclawRuntime {
         finalResult = parsed.finalResult;
       }
       for (const event of parsed.events) {
-        if (typeof event.finalText === 'string' && event.finalText.trim()) {
-          lastObservedFinalText = event.finalText;
+        if (event.kind === 'delta' && typeof event.finalText === 'string' && event.finalText.trim()) {
+          lastObservedChatFinalText = event.finalText;
         }
         emit(event);
       }
@@ -553,15 +581,25 @@ export class IronclawRuntime {
         out.close();
         err.close();
 
-        const fallbackFinalText = typeof lastObservedFinalText === 'string' && lastObservedFinalText.trim()
-          ? lastObservedFinalText
-          : null;
+        const chatFinalText =
+          typeof lastObservedChatFinalText === 'string' && lastObservedChatFinalText.trim()
+            ? lastObservedChatFinalText
+            : null;
 
         if (finalResult) {
-          if (!finalResult.finalText && fallbackFinalText) {
+          if (chatFinalText) {
             resolve({
               ...finalResult,
-              finalText: fallbackFinalText,
+              finalText: chatFinalText,
+              finalTextSource: 'chat_final',
+            });
+            return;
+          }
+          if (!finalResult.finalText) {
+            resolve({
+              ...finalResult,
+              finalText: finalResult.summary || null,
+              finalTextSource: 'fallback_summary',
             });
             return;
           }
@@ -569,12 +607,13 @@ export class IronclawRuntime {
           return;
         }
 
-        if (code === 0 && fallbackFinalText) {
+        if (code === 0 && chatFinalText) {
           resolve({
             ok: true,
             runId: lastRunId,
             summary: 'completed',
-            finalText: fallbackFinalText,
+            finalText: chatFinalText,
+            finalTextSource: 'chat_final',
           });
           return;
         }

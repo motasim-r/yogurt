@@ -1090,6 +1090,271 @@ describe('GranolaTaskService', () => {
     await service.dispose();
   });
 
+  it('does not let terminal completed payload overwrite earlier chat-final text', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Final clobber guard task',
+              description: 'Ensure completed payload cannot downgrade final text.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-final-guard', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const done = deferred<{ ok: boolean; runId: string; summary: string; finalText: string | null }>();
+    let emitRunEvent: ((event: Record<string, unknown>) => void) | undefined;
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: {
+        startRun: ReturnType<typeof vi.fn>;
+      };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(({ onEvent: callback }: { onEvent: (event: Record<string, unknown>) => void }) => {
+      emitRunEvent = callback;
+      return {
+        cancel: vi.fn(),
+        done: done.promise,
+      };
+    });
+
+    const started = await service.tasksStart(String(todoId));
+    expect(started.ok).toBe(true);
+    await waitUntil(() => typeof emitRunEvent === 'function');
+    if (!emitRunEvent) {
+      throw new Error('Missing onEvent callback');
+    }
+
+    emitRunEvent({
+      runId: 'run-final-guard',
+      kind: 'delta',
+      message: 'Final answer from chat-final stream.',
+      snapshot: 'Final answer from chat-final stream.',
+      finalText: 'Final answer from chat-final stream.',
+    });
+    emitRunEvent({
+      runId: 'run-final-guard',
+      kind: 'completed',
+      message: 'completed',
+      finalText: 'Progress update: Step 1/4 started.',
+    });
+
+    done.resolve({
+      ok: true,
+      runId: 'run-final-guard',
+      summary: 'completed',
+      finalText: 'Progress update: Step 1/4 started.',
+    });
+
+    await waitUntil(() => service.getFeed().activeRunTodoId === null);
+    const thread = await service.tasksGetThread(String(todoId), null, 120);
+    const assistant = [...thread.messages].reverse().find((message) => message.role === 'assistant');
+    expect(assistant?.content).toBe('Final answer from chat-final stream.');
+
+    await service.dispose();
+  });
+
+  it('passes per-task isolated session key and web lane to runtime startRun', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Session key task',
+              description: 'Verify runtime options for isolation.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'medium',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-session-key', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-session-key',
+        summary: 'completed',
+        finalText: 'done',
+      }),
+    }));
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: typeof startRun };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = startRun;
+
+    const started = await service.tasksStart(String(todoId));
+    expect(started.ok).toBe(true);
+    await waitUntil(() => service.getFeed().activeRunTodoId === null);
+
+    expect(startRun).toHaveBeenCalledTimes(1);
+    const firstCall = (startRun.mock.calls.at(0)?.at(0) ?? null) as unknown as Record<string, unknown> | null;
+    expect(firstCall?.lane).toBe('web');
+    expect(firstCall?.thinking).toBe('minimal');
+    expect(firstCall?.sessionKey).toBe(`agent:main:web:yogurt:${String(todoId)}`);
+
+    await service.dispose();
+  });
+
+  it('auto-retries once when the first run ends with progress-only output', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Auto-retry task',
+              description: 'Retry if first completion is progress-only.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-auto-retry', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const firstRun = deferred<{ ok: boolean; runId: string; summary: string; finalText: string | null }>();
+    const secondRun = deferred<{ ok: boolean; runId: string; summary: string; finalText: string | null }>();
+    const startRun = vi
+      .fn()
+      .mockImplementationOnce(() => ({ cancel: vi.fn(), done: firstRun.promise }))
+      .mockImplementationOnce(() => ({ cancel: vi.fn(), done: secondRun.promise }));
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: typeof startRun };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = startRun;
+
+    const started = await service.tasksStart(String(todoId));
+    expect(started.ok).toBe(true);
+
+    firstRun.resolve({
+      ok: true,
+      runId: 'run-progress-only',
+      summary: 'completed',
+      finalText: 'Progress update: Step 1/4 started — pulling candidates now.',
+    });
+    await waitUntil(() => startRun.mock.calls.length === 2);
+
+    secondRun.resolve({
+      ok: true,
+      runId: 'run-progress-retry',
+      summary: 'completed',
+      finalText: 'Final findings with links: https://example.com',
+    });
+    await waitUntil(() => service.getFeed().activeRunTodoId === null);
+
+    const thread = await service.tasksGetThread(String(todoId), null, 160);
+    expect(thread.messages.some((message) => message.trace?.title === 'Auto-retry triggered')).toBe(true);
+    const assistant = [...thread.messages].reverse().find((message) => message.role === 'assistant');
+    expect(assistant?.content).toContain('Final findings with links');
+
+    await service.dispose();
+  });
+
+  it('runs legacy launchagent cleanup only once', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    const internals = service as unknown as {
+      launchctl: ReturnType<typeof vi.fn>;
+      ensureLegacyGatewayLaunchAgentDisabledOnce: () => Promise<void>;
+      legacyGatewayCleanupAttempted: boolean;
+    };
+    internals.launchctl = vi.fn(async () => ({ ok: true, output: '' }));
+    await service.init();
+
+    const expectedCalls = process.platform === 'darwin' ? 2 : 0;
+    expect(internals.launchctl).toHaveBeenCalledTimes(expectedCalls);
+
+    internals.legacyGatewayCleanupAttempted = false;
+    await internals.ensureLegacyGatewayLaunchAgentDisabledOnce();
+    expect(internals.launchctl).toHaveBeenCalledTimes(expectedCalls);
+
+    await service.dispose();
+  });
+
   it('does not open external browser windows when starting a task run', async () => {
     const dataDir = await makeTempDir();
     const openExternal = vi.fn(async () => {});
