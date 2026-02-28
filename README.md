@@ -1,5 +1,38 @@
 # Yogurt Monorepo
 
+## Start Here (New Contributors)
+
+If you just opened this repo and want to run it quickly:
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Run health checks (IronClaw + MCP reachability):
+
+```bash
+npm run doctor
+```
+
+3. Start the desktop app in dev mode:
+
+```bash
+npm run dev
+```
+
+4. In app: `Connect Granola` -> complete OAuth -> `Sync Granola` -> `Start Task`.
+
+Primary onboarding guide:
+
+- [`docs/new-machine-setup.md`](docs/new-machine-setup.md)
+
+Reference docs:
+
+- [`docs/operations.md`](docs/operations.md)
+- [`docs/architecture.md`](docs/architecture.md)
+
 Yogurt is a desktop-first task copilot that unifies:
 
 1. Granola MCP ingestion (meetings, notes, transcripts)
@@ -30,6 +63,8 @@ npm run dev
 ```
 
 Renderer URL in dev mode: `http://127.0.0.1:5173`
+
+New machine onboarding: [`docs/new-machine-setup.md`](docs/new-machine-setup.md)
 
 ## Environment
 
