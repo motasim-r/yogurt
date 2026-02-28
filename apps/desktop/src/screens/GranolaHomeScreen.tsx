@@ -14,19 +14,52 @@ import {
   RecipesIcon,
   SearchIcon,
   SharedIcon,
-  SidebarOpenIcon,
   SparkleIcon,
   TrashIcon,
 } from '../design-system/icons';
 import { granolaClient } from '../lib/granolaClient';
-import type { TaskChatMessage, TaskItemPublic, TasksFeed, TasksRealtimeEvent } from '../shared/types';
+import type { TaskChatMessage, TaskChatTrace, TaskItemPublic, TasksFeed, TasksRealtimeEvent } from '../shared/types';
 import { MarkdownMessage } from '../components/MarkdownMessage';
 
 type MainTab = 'home' | 'tasks';
 type TasksViewMode = 'list' | 'chat';
+const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
 
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ');
+}
+
+function createWarningKey(summary: string, details: string[]): string {
+  const normalizedSummary = summary.trim();
+  const normalizedDetails = details.map((item) => item.trim()).filter((item) => item.length > 0);
+  return `${normalizedSummary}::${normalizedDetails.join('|')}`;
+}
+
+function readDismissedWarningKeys(): string[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(DISMISSED_WARNING_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDismissedWarningKeys(values: Set<string>): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.setItem(DISMISSED_WARNING_STORAGE_KEY, JSON.stringify([...values]));
+  } catch {
+    // Ignore storage write failures (private mode/storage quota).
+  }
 }
 
 function formatDate(value: string | null): string {
@@ -147,6 +180,7 @@ function applyRealtimeEventToMessages(messages: TaskChatMessage[], event: TasksR
       streaming: true,
       statusTag: 'streaming',
       createdAt: event.createdAt,
+      trace: null,
     };
     return next;
   }
@@ -160,8 +194,239 @@ function applyRealtimeEventToMessages(messages: TaskChatMessage[], event: TasksR
     createdAt: event.createdAt,
     streaming: true,
     statusTag: 'streaming',
+    trace: null,
   });
   return mergeMessageList([], next);
+}
+
+type ChatRenderBlock =
+  | { kind: 'trace-group'; key: string; messages: TaskChatMessage[] }
+  | { kind: 'message'; key: string; message: TaskChatMessage };
+
+type SourceRow = {
+  key: string;
+  domain: string;
+  url: string;
+};
+
+function buildChatRenderBlocks(messages: TaskChatMessage[]): ChatRenderBlock[] {
+  const blocks: ChatRenderBlock[] = [];
+  let pendingTraceMessages: TaskChatMessage[] = [];
+  let pendingGroupKey: string | null = null;
+
+  const flushTrace = () => {
+    if (pendingTraceMessages.length === 0) {
+      return;
+    }
+    blocks.push({
+      kind: 'trace-group',
+      key: pendingGroupKey || `trace-${pendingTraceMessages[0]?.messageId ?? blocks.length}`,
+      messages: pendingTraceMessages,
+    });
+    pendingTraceMessages = [];
+    pendingGroupKey = null;
+  };
+
+  for (const message of messages) {
+    if (!message.trace) {
+      flushTrace();
+      blocks.push({
+        kind: 'message',
+        key: message.messageId,
+        message,
+      });
+      continue;
+    }
+
+    const groupKey = message.runId || message.trace.groupId || 'trace-unknown';
+    if (pendingTraceMessages.length > 0 && pendingGroupKey !== groupKey) {
+      flushTrace();
+    }
+    pendingGroupKey = groupKey;
+    pendingTraceMessages.push(message);
+  }
+  flushTrace();
+  return blocks;
+}
+
+function traceDetailRows(trace: TaskChatTrace): Array<{ key: string; value: string }> {
+  const rows: Array<{ key: string; value: string }> = [];
+  if (trace.detail && trace.detail.trim()) {
+    rows.push({ key: 'detail', value: trace.detail.trim() });
+  }
+  if (trace.toolArgs && trace.toolArgs.trim()) {
+    rows.push({ key: 'toolArgs', value: trace.toolArgs.trim() });
+  }
+  if (trace.toolMeta && trace.toolMeta.trim()) {
+    rows.push({ key: 'toolMeta', value: trace.toolMeta.trim() });
+  }
+  return rows;
+}
+
+function collectSourceRows(messages: TaskChatMessage[]): SourceRow[] {
+  const map = new Map<string, SourceRow>();
+  for (const message of messages) {
+    const trace = message.trace;
+    if (!trace || trace.kind !== 'source_fetch') {
+      continue;
+    }
+    const url = (trace.sourceUrl || trace.detail || '').trim();
+    if (!url || map.has(url)) {
+      continue;
+    }
+    map.set(url, {
+      key: `${message.messageId}-${url}`,
+      domain: (trace.domain || 'source').trim(),
+      url,
+    });
+  }
+  return [...map.values()];
+}
+
+function traceRowSymbol(trace: TaskChatTrace): string {
+  if (trace.kind === 'thought') {
+    return '•';
+  }
+  if (trace.kind === 'phase') {
+    return '◉';
+  }
+  if (trace.kind === 'source_fetch') {
+    return '◌';
+  }
+  if (trace.kind === 'tool_result' && trace.isError) {
+    return '×';
+  }
+  return '○';
+}
+
+function RunTraceGroup({
+  messages,
+  expandedRows,
+  onToggleRow,
+}: {
+  messages: TaskChatMessage[];
+  expandedRows: Set<string>;
+  onToggleRow: (messageId: string) => void;
+}) {
+  const thoughtRows = messages.filter((item) => item.trace?.kind === 'thought');
+  const actionRows = messages.filter((item) => {
+    const kind = item.trace?.kind;
+    return kind === 'phase' || kind === 'tool_start' || kind === 'tool_result';
+  });
+  const sourceRows = collectSourceRows(messages);
+
+  const renderRows = (rows: TaskChatMessage[]) =>
+    rows.map((message) => {
+      const trace = message.trace;
+      if (!trace) {
+        return null;
+      }
+      const details = traceDetailRows(trace);
+      const isExpanded = expandedRows.has(message.messageId);
+      const showToggle = details.length > 0;
+      return (
+        <div key={message.messageId} className={cx('run-trace__row', trace.isError && 'is-error')}>
+          <span className="run-trace__icon" aria-hidden="true">
+            {traceRowSymbol(trace)}
+          </span>
+          <div>
+            <div className="run-trace__title">
+              <span>{trace.title}</span>
+              <span>{formatClock(message.createdAt)}</span>
+            </div>
+            {showToggle ? (
+              <button
+                type="button"
+                className="run-trace__toggle"
+                onClick={() => {
+                  onToggleRow(message.messageId);
+                }}
+              >
+                {isExpanded ? 'Hide details' : 'Show details'}
+              </button>
+            ) : null}
+            {showToggle && isExpanded ? (
+              <div className="run-trace__details">
+                {details.map((detail) => (
+                  <pre key={`${message.messageId}-${detail.key}`}>{detail.value}</pre>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      );
+    });
+
+  return (
+    <article className="run-trace">
+      <div className="run-trace__rail" aria-hidden="true" />
+      <div>
+        {thoughtRows.length > 0 ? (
+          <section className="run-trace__section">
+            <h3>Thought</h3>
+            {renderRows(thoughtRows)}
+          </section>
+        ) : null}
+
+        {actionRows.length > 0 ? (
+          <section className="run-trace__section">
+            <h3>Actions</h3>
+            {renderRows(actionRows)}
+          </section>
+        ) : null}
+
+        {sourceRows.length > 0 ? (
+          <section className="run-trace__section">
+            <h3>Sources</h3>
+            <div className="run-sources-card">
+              <p>Fetched {sourceRows.length} source{sourceRows.length === 1 ? '' : 's'}</p>
+              {sourceRows.map((source) => (
+                <div key={source.key} className="run-sources-card__row">
+                  <span className="run-sources-card__domain">{source.domain}</span>
+                  <a className="run-sources-card__url" href={source.url} target="_blank" rel="noreferrer">
+                    {source.url}
+                  </a>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ChatBubble({ message }: { message: TaskChatMessage }) {
+  const roleLabel =
+    message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : message.role === 'status' ? 'Status' : 'System';
+
+  if (message.role === 'assistant' && !message.streaming) {
+    return (
+      <article className="run-final-answer">
+        <header>
+          <span>Final result</span>
+          <span>{formatClock(message.createdAt)}</span>
+        </header>
+        <MarkdownMessage content={message.content || '...'} />
+      </article>
+    );
+  }
+
+  return (
+    <article className={cx('copilot-chat-bubble', `is-${message.role}`, message.streaming && 'is-streaming')}>
+      <header className="copilot-chat-bubble__header">
+        <span>{roleLabel}</span>
+        <span>{formatClock(message.createdAt)}</span>
+      </header>
+      <div className="copilot-chat-bubble__content">
+        {message.role === 'assistant' || message.role === 'system' ? (
+          <MarkdownMessage content={message.content || '...'} />
+        ) : (
+          <p>{message.content || '...'}</p>
+        )}
+      </div>
+    </article>
+  );
 }
 
 function TaskListRow({
@@ -224,24 +489,30 @@ function TaskListRow({
   );
 }
 
-function ChatBubble({ message }: { message: TaskChatMessage }) {
-  const roleLabel =
-    message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : message.role === 'status' ? 'Status' : 'System';
+type CopilotWarningProps = {
+  summary: string;
+  details: string[];
+  listKeyPrefix: string;
+  onHide: () => void;
+};
 
+function CopilotWarning({ summary, details, listKeyPrefix, onHide }: CopilotWarningProps) {
   return (
-    <article className={cx('copilot-chat-bubble', `is-${message.role}`, message.streaming && 'is-streaming')}>
-      <header className="copilot-chat-bubble__header">
-        <span>{roleLabel}</span>
-        <span>{formatClock(message.createdAt)}</span>
-      </header>
-      <div className="copilot-chat-bubble__content">
-        {message.role === 'assistant' || message.role === 'system' ? (
-          <MarkdownMessage content={message.content || '...'} />
-        ) : (
-          <p>{message.content || '...'}</p>
-        )}
+    <div className="copilot-warning">
+      <div className="copilot-warning__top">
+        <p>{summary}</p>
+        <button type="button" className="copilot-warning__hide" onClick={onHide}>
+          Hide
+        </button>
       </div>
-    </article>
+      {details.length > 0 ? (
+        <ul>
+          {details.slice(0, 3).map((item, index) => (
+            <li key={`${listKeyPrefix}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
@@ -265,6 +536,8 @@ export default function GranolaHomeScreen() {
   const [composerText, setComposerText] = useState('');
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
+  const [expandedTraceRows, setExpandedTraceRows] = useState<Set<string>>(() => new Set());
+  const [dismissedWarningKeys, setDismissedWarningKeys] = useState<Set<string>>(() => new Set(readDismissedWarningKeys()));
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
@@ -274,12 +547,52 @@ export default function GranolaHomeScreen() {
   const selectedTask = useMemo(() => tasks.find((item) => item.todoId === selectedTodoId) ?? null, [tasks, selectedTodoId]);
   const activeRunTodoId = tasksFeed?.activeRunTodoId ?? null;
   const selectedRunActive = Boolean(selectedTodoId && activeRunTodoId === selectedTodoId);
+  const chatRenderBlocks = useMemo(() => buildChatRenderBlocks(threadMessages), [threadMessages]);
   const showWorkingIndicator =
     selectedRunActive || threadMessages.some((message) => message.role === 'assistant' && message.streaming);
+  const activeWarningKey = useMemo(
+    () => (tasksFeed?.warning ? createWarningKey(tasksFeed.warning, tasksFeed.warningDetails) : null),
+    [tasksFeed?.warning, tasksFeed?.warningDetails],
+  );
+  const showCopilotWarning = Boolean(tasksFeed?.warning && activeWarningKey && !dismissedWarningKeys.has(activeWarningKey));
 
   const keepTasksAsPrimaryTab = useCallback(() => {
     setActiveTab('tasks');
   }, []);
+
+  const toggleTraceRow = useCallback((messageId: string) => {
+    setExpandedTraceRows((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleHideWarning = useCallback(() => {
+    if (!activeWarningKey) {
+      return;
+    }
+    setDismissedWarningKeys((current) => {
+      if (current.has(activeWarningKey)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(activeWarningKey);
+      return next;
+    });
+  }, [activeWarningKey]);
+
+  useEffect(() => {
+    writeDismissedWarningKeys(dismissedWarningKeys);
+  }, [dismissedWarningKeys]);
+
+  useEffect(() => {
+    setExpandedTraceRows(new Set());
+  }, [selectedTodoId]);
 
   const scrollMessagesToBottom = useCallback((smooth = false) => {
     const element = messagesViewportRef.current;
@@ -640,11 +953,7 @@ export default function GranolaHomeScreen() {
   return (
     <div className="granola-frame" data-name="Granola" data-node-id="13:2">
       <aside className="granola-sidebar">
-        <div className="sidebar-top">
-          <IconButton ariaLabel="Open sidebar">
-            <SidebarOpenIcon className="glyph-16" />
-          </IconButton>
-        </div>
+        <div className="sidebar-top" />
 
         <div className="sidebar-search-stack">
           <div className="sidebar-search-pill" role="search">
@@ -767,17 +1076,13 @@ export default function GranolaHomeScreen() {
                 <span>Queued runs: {tasksFeed?.queuedRunCount ?? 0}</span>
               </div>
 
-              {tasksFeed?.warning ? (
-                <div className="copilot-warning">
-                  <p>{tasksFeed.warning}</p>
-                  {tasksFeed.warningDetails.length > 0 ? (
-                    <ul>
-                      {tasksFeed.warningDetails.slice(0, 3).map((item, index) => (
-                        <li key={`warning-${index}`}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
+              {showCopilotWarning && tasksFeed?.warning ? (
+                <CopilotWarning
+                  summary={tasksFeed.warning}
+                  details={tasksFeed.warningDetails}
+                  listKeyPrefix="warning-list"
+                  onHide={handleHideWarning}
+                />
               ) : null}
 
               <div className="copilot-task-list">
@@ -897,17 +1202,13 @@ export default function GranolaHomeScreen() {
                 </div>
               ) : null}
 
-              {tasksFeed?.warning ? (
-                <div className="copilot-warning">
-                  <p>{tasksFeed.warning}</p>
-                  {tasksFeed.warningDetails.length > 0 ? (
-                    <ul>
-                      {tasksFeed.warningDetails.slice(0, 3).map((item, index) => (
-                        <li key={`warning-chat-${index}`}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
+              {showCopilotWarning && tasksFeed?.warning ? (
+                <CopilotWarning
+                  summary={tasksFeed.warning}
+                  details={tasksFeed.warningDetails}
+                  listKeyPrefix="warning-chat"
+                  onHide={handleHideWarning}
+                />
               ) : null}
 
               <div ref={messagesViewportRef} className="copilot-chat-messages">
@@ -930,9 +1231,23 @@ export default function GranolaHomeScreen() {
                 {!threadLoading && threadMessages.length === 0 ? (
                   <p className="copilot-empty">No messages yet. Click Start Task or send a message to begin.</p>
                 ) : null}
-                {threadMessages.map((message) => (
-                  <ChatBubble key={message.messageId} message={message} />
-                ))}
+                {chatRenderBlocks.map((block) => {
+                  if (block.kind === 'trace-group') {
+                    return (
+                      <RunTraceGroup
+                        key={block.key}
+                        messages={block.messages}
+                        expandedRows={expandedTraceRows}
+                        onToggleRow={toggleTraceRow}
+                      />
+                    );
+                  }
+                  const message = block.message;
+                  if (message.role === 'assistant' && message.streaming && selectedRunActive) {
+                    return null;
+                  }
+                  return <ChatBubble key={block.key} message={message} />;
+                })}
               </div>
 
               <div className="copilot-composer">

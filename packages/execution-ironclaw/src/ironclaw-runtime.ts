@@ -53,10 +53,22 @@ export interface IronclawRunResult {
   error?: string;
 }
 
+export interface IronclawToolPayload {
+  phase: string;
+  name: string;
+  toolCallId: string | null;
+  args: unknown;
+  meta: unknown;
+  isError: boolean;
+}
+
 export interface IronclawRunEvent {
   runId: string | null;
-  kind: 'started' | 'delta' | 'completed' | 'failed';
+  kind: 'thinking' | 'tool' | 'started' | 'delta' | 'completed' | 'failed';
   message: string;
+  delta?: string;
+  snapshot?: string;
+  tool?: IronclawToolPayload;
   finalText?: string | null;
 }
 
@@ -75,6 +87,208 @@ interface IronclawRuntimeOptions {
   profile: string;
   binary?: string;
   timeoutMs?: number;
+}
+
+function parseToolPayload(value: unknown): IronclawToolPayload | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const data = value as Record<string, unknown>;
+  const phase = typeof data.phase === 'string' ? data.phase : '';
+  const name = typeof data.name === 'string' ? data.name : '';
+  if (!phase && !name) {
+    return null;
+  }
+  return {
+    phase,
+    name,
+    toolCallId: typeof data.toolCallId === 'string' ? data.toolCallId : null,
+    args: Object.prototype.hasOwnProperty.call(data, 'args') ? data.args : null,
+    meta: Object.prototype.hasOwnProperty.call(data, 'meta') ? data.meta : null,
+    isError: data.isError === true,
+  };
+}
+
+function describeToolEvent(tool: IronclawToolPayload): string {
+  const baseName = tool.name || 'tool';
+  if (tool.phase === 'start') {
+    return `Starting ${baseName}`;
+  }
+  if (tool.phase === 'result') {
+    return tool.isError ? `${baseName} failed` : `${baseName} completed`;
+  }
+  return `${baseName} ${tool.phase || 'event'}`.trim();
+}
+
+export function parseIronclawEventLine(
+  line: string,
+  previousRunId: string | null,
+): {
+  runId: string | null;
+  events: IronclawRunEvent[];
+  finalResult: IronclawRunResult | null;
+} {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return {
+      runId: previousRunId,
+      events: [],
+      finalResult: null,
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return {
+      runId: previousRunId,
+      events: [],
+      finalResult: null,
+    };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      runId: previousRunId,
+      events: [],
+      finalResult: null,
+    };
+  }
+
+  const eventRecord = parsed as Record<string, unknown>;
+  const runId = typeof eventRecord.runId === 'string' ? eventRecord.runId : previousRunId;
+  const events: IronclawRunEvent[] = [];
+
+  const eventType = typeof eventRecord.event === 'string' ? eventRecord.event : '';
+  if (eventType === 'agent') {
+    const stream = typeof eventRecord.stream === 'string' ? eventRecord.stream : '';
+    const data =
+      eventRecord.data && typeof eventRecord.data === 'object' && !Array.isArray(eventRecord.data)
+        ? (eventRecord.data as Record<string, unknown>)
+        : null;
+
+    if (stream === 'health') {
+      return {
+        runId,
+        events,
+        finalResult: null,
+      };
+    }
+
+    if (stream === 'lifecycle' && data?.phase === 'start') {
+      events.push({
+        runId,
+        kind: 'started',
+        message: 'IronClaw run started.',
+      });
+      return {
+        runId,
+        events,
+        finalResult: null,
+      };
+    }
+
+    if (stream === 'assistant') {
+      const delta = typeof data?.delta === 'string' ? data.delta : '';
+      const snapshot = typeof data?.text === 'string' ? data.text : '';
+      if (delta || snapshot) {
+        events.push({
+          runId,
+          kind: 'delta',
+          message: delta || snapshot,
+          delta: delta || undefined,
+          snapshot: snapshot || undefined,
+        });
+      }
+      return {
+        runId,
+        events,
+        finalResult: null,
+      };
+    }
+
+    if (stream === 'thinking') {
+      const delta = typeof data?.delta === 'string' ? data.delta : '';
+      if (delta) {
+        events.push({
+          runId,
+          kind: 'thinking',
+          message: delta,
+          delta,
+        });
+      }
+      return {
+        runId,
+        events,
+        finalResult: null,
+      };
+    }
+
+    if (stream === 'tool') {
+      const tool = parseToolPayload(data);
+      if (tool) {
+        events.push({
+          runId,
+          kind: 'tool',
+          message: describeToolEvent(tool),
+          tool,
+        });
+      }
+      return {
+        runId,
+        events,
+        finalResult: null,
+      };
+    }
+
+    return {
+      runId,
+      events,
+      finalResult: null,
+    };
+  }
+
+  if (eventType === 'result') {
+    const status = typeof eventRecord.status === 'string' ? eventRecord.status : 'error';
+    const summary = typeof eventRecord.summary === 'string' ? eventRecord.summary : status;
+    const result =
+      eventRecord.result && typeof eventRecord.result === 'object' && !Array.isArray(eventRecord.result)
+        ? (eventRecord.result as Record<string, unknown>)
+        : null;
+    const payloads = Array.isArray(result?.payloads) ? result.payloads : [];
+    const firstPayload =
+      payloads[0] && typeof payloads[0] === 'object' && !Array.isArray(payloads[0])
+        ? (payloads[0] as Record<string, unknown>)
+        : null;
+    const finalText = typeof firstPayload?.text === 'string' ? firstPayload.text : null;
+
+    const ok = status === 'ok';
+    const finalResult: IronclawRunResult = {
+      ok,
+      runId,
+      summary,
+      finalText,
+      error: ok ? undefined : summary,
+    };
+    events.push({
+      runId,
+      kind: ok ? 'completed' : 'failed',
+      message: summary,
+      finalText,
+    });
+    return {
+      runId,
+      events,
+      finalResult,
+    };
+  }
+
+  return {
+    runId,
+    events,
+    finalResult: null,
+  };
 }
 
 export class IronclawRuntime {
@@ -211,87 +425,13 @@ export class IronclawRuntime {
     };
 
     out.on('line', (line) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return;
+      const parsed = parseIronclawEventLine(line, lastRunId);
+      lastRunId = parsed.runId;
+      if (parsed.finalResult) {
+        finalResult = parsed.finalResult;
       }
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
-        return;
-      }
-
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return;
-      }
-
-      const eventRecord = parsed as Record<string, unknown>;
-      const runId = typeof eventRecord.runId === 'string' ? eventRecord.runId : null;
-      if (runId) {
-        lastRunId = runId;
-      }
-
-      const eventType = typeof eventRecord.event === 'string' ? eventRecord.event : '';
-      if (eventType === 'agent') {
-        const stream = typeof eventRecord.stream === 'string' ? eventRecord.stream : '';
-        const data =
-          eventRecord.data && typeof eventRecord.data === 'object' && !Array.isArray(eventRecord.data)
-            ? (eventRecord.data as Record<string, unknown>)
-            : null;
-
-        if (stream === 'lifecycle' && data?.phase === 'start') {
-          emit({
-            runId: lastRunId,
-            kind: 'started',
-            message: 'IronClaw run started.',
-          });
-          return;
-        }
-
-        if (stream === 'assistant') {
-          const text = typeof data?.text === 'string' ? data.text : typeof data?.delta === 'string' ? data.delta : '';
-          if (text) {
-            emit({
-              runId: lastRunId,
-              kind: 'delta',
-              message: text,
-            });
-          }
-          return;
-        }
-      }
-
-      if (eventType === 'result') {
-        const status = typeof eventRecord.status === 'string' ? eventRecord.status : 'error';
-        const summary = typeof eventRecord.summary === 'string' ? eventRecord.summary : status;
-        const result =
-          eventRecord.result && typeof eventRecord.result === 'object' && !Array.isArray(eventRecord.result)
-            ? (eventRecord.result as Record<string, unknown>)
-            : null;
-        const payloads = Array.isArray(result?.payloads) ? result.payloads : [];
-        const firstPayload =
-          payloads[0] && typeof payloads[0] === 'object' && !Array.isArray(payloads[0])
-            ? (payloads[0] as Record<string, unknown>)
-            : null;
-        const finalText = typeof firstPayload?.text === 'string' ? firstPayload.text : null;
-
-        const ok = status === 'ok';
-        finalResult = {
-          ok,
-          runId: lastRunId,
-          summary,
-          finalText,
-          error: ok ? undefined : summary,
-        };
-
-        emit({
-          runId: lastRunId,
-          kind: ok ? 'completed' : 'failed',
-          message: summary,
-          finalText,
-        });
+      for (const event of parsed.events) {
+        emit(event);
       }
     });
 

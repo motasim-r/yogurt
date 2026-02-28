@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { TaskChatMessage } from '../../src/shared/types.js';
+import type { TaskChatMessage, TaskChatTrace } from '../../src/shared/types.js';
 
 export interface TaskChatStoreDocument {
   version: 1;
@@ -32,6 +32,58 @@ function defaultDocument(): TaskChatStoreDocument {
   };
 }
 
+function normalizeOptionalString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function normalizeTrace(raw: unknown): TaskChatTrace | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  const kind = raw.kind;
+  if (
+    kind !== 'thought' &&
+    kind !== 'tool_start' &&
+    kind !== 'tool_result' &&
+    kind !== 'source_fetch' &&
+    kind !== 'phase'
+  ) {
+    return null;
+  }
+
+  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+  if (!title) {
+    return null;
+  }
+
+  const phase = typeof raw.phase === 'string' ? raw.phase : null;
+  const isValidPhase =
+    phase === 'queued' ||
+    phase === 'started' ||
+    phase === 'thinking' ||
+    phase === 'working' ||
+    phase === 'streaming' ||
+    phase === 'completed' ||
+    phase === 'failed' ||
+    phase === 'cancelled' ||
+    phase === null;
+
+  return {
+    kind,
+    title,
+    detail: normalizeOptionalString(raw.detail),
+    toolName: normalizeOptionalString(raw.toolName),
+    toolArgs: normalizeOptionalString(raw.toolArgs),
+    toolMeta: normalizeOptionalString(raw.toolMeta),
+    isError: typeof raw.isError === 'boolean' ? raw.isError : null,
+    sourceUrl: normalizeOptionalString(raw.sourceUrl),
+    domain: normalizeOptionalString(raw.domain),
+    phase: isValidPhase ? phase : null,
+    groupId: normalizeOptionalString(raw.groupId),
+  };
+}
+
 function normalizeMessage(raw: unknown): TaskChatMessage | null {
   if (!isRecord(raw)) {
     return null;
@@ -45,6 +97,7 @@ function normalizeMessage(raw: unknown): TaskChatMessage | null {
   const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : '';
   const streaming = raw.streaming === true;
   const statusTag = typeof raw.statusTag === 'string' ? raw.statusTag : null;
+  const trace = normalizeTrace(raw.trace);
 
   if (!messageId || !todoId || !createdAt) {
     return null;
@@ -73,6 +126,7 @@ function normalizeMessage(raw: unknown): TaskChatMessage | null {
       statusTag === 'cancelled'
         ? statusTag
         : null,
+    trace,
   };
 }
 

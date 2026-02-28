@@ -60,6 +60,21 @@ export type TaskExecutionPhase =
   | 'failed'
   | 'cancelled';
 export type TaskChatRole = 'user' | 'assistant' | 'system' | 'status';
+export type TaskChatTraceKind = 'thought' | 'tool_start' | 'tool_result' | 'source_fetch' | 'phase';
+
+export interface TaskChatTrace {
+  kind: TaskChatTraceKind;
+  title: string;
+  detail?: string | null;
+  toolName?: string | null;
+  toolArgs?: string | null;
+  toolMeta?: string | null;
+  isError?: boolean | null;
+  sourceUrl?: string | null;
+  domain?: string | null;
+  phase?: TaskExecutionPhase | null;
+  groupId?: string | null;
+}
 
 export interface TaskStep {
   step: string;
@@ -97,6 +112,7 @@ export interface TaskChatMessage {
   createdAt: string;
   streaming: boolean;
   statusTag: TaskExecutionPhase | null;
+  trace?: TaskChatTrace | null;
 }
 
 export interface TaskChatThreadPage {

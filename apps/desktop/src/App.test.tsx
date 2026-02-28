@@ -1,7 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TaskChatMessage, TasksFeed } from './shared/types';
+import type { TaskChatMessage, TasksFeed, TasksRealtimeEvent } from './shared/types';
+
+const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
 
 const {
   state,
@@ -142,6 +144,7 @@ const {
       ['todo-1', makeThread('todo-1')],
       ['todo-2', makeThread('todo-2')],
     ]),
+    subscriber: null as ((event: TasksRealtimeEvent) => void) | null,
   };
 
   const granolaClientMock = {
@@ -225,7 +228,14 @@ const {
         markerPath: '/tmp/.legacy-openclaw-import.json',
       },
     })),
-    tasksSubscribe: vi.fn(() => () => {}),
+    tasksSubscribe: vi.fn((listener: (event: TasksRealtimeEvent) => void) => {
+      state.subscriber = listener;
+      return () => {
+        if (state.subscriber === listener) {
+          state.subscriber = null;
+        }
+      };
+    }),
     tasksRefreshExtraction: vi.fn(async () => ({
       ok: true,
       processedMeetings: 0,
@@ -250,11 +260,18 @@ import App from './App';
 
 describe('App task copilot', () => {
   beforeEach(() => {
+    const storage = window.localStorage;
+    if (storage && typeof storage.removeItem === 'function') {
+      storage.removeItem(DISMISSED_WARNING_STORAGE_KEY);
+    } else if (storage && typeof storage.setItem === 'function') {
+      storage.setItem(DISMISSED_WARNING_STORAGE_KEY, '[]');
+    }
     state.feed = makeFeed();
     state.threads = new Map<string, TaskChatMessage[]>([
       ['todo-1', makeThread('todo-1')],
       ['todo-2', makeThread('todo-2')],
     ]);
+    state.subscriber = null;
     vi.clearAllMocks();
   });
 
@@ -316,5 +333,165 @@ describe('App task copilot', () => {
     const link = await screen.findByRole('link', { name: /CRM docs/i });
     expect(link).toHaveAttribute('href', 'https://example.com/crm');
     expect(screen.getByText(/Compare pricing/i)).toBeInTheDocument();
+  });
+
+  it('renders timeline traces with details collapsed by default and final answer styling', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', [
+      {
+        messageId: 'trace-start',
+        todoId: 'todo-1',
+        runId: 'run-1',
+        role: 'status',
+        content: 'Run started',
+        createdAt: '2026-02-28T10:02:00.000Z',
+        streaming: false,
+        statusTag: 'started',
+        trace: {
+          kind: 'phase',
+          title: 'Run started',
+          detail: 'Started from task list.',
+          phase: 'started',
+          groupId: 'run-1',
+        },
+      },
+      {
+        messageId: 'trace-thought',
+        todoId: 'todo-1',
+        runId: 'run-1',
+        role: 'status',
+        content: 'Thinking through the approach',
+        createdAt: '2026-02-28T10:02:10.000Z',
+        streaming: false,
+        statusTag: 'thinking',
+        trace: {
+          kind: 'thought',
+          title: 'Thinking through the approach',
+          detail: 'Compare vendors and normalize pricing models.',
+          phase: 'thinking',
+          groupId: 'run-1',
+        },
+      },
+      {
+        messageId: 'trace-tool',
+        todoId: 'todo-1',
+        runId: 'run-1',
+        role: 'status',
+        content: 'Starting web search',
+        createdAt: '2026-02-28T10:02:20.000Z',
+        streaming: false,
+        statusTag: null,
+        trace: {
+          kind: 'tool_start',
+          title: 'Starting web search',
+          toolName: 'web_search',
+          toolArgs: '{\"query\":\"crm vendors\"}',
+          groupId: 'tool-1',
+        },
+      },
+      {
+        messageId: 'trace-source',
+        todoId: 'todo-1',
+        runId: 'run-1',
+        role: 'status',
+        content: 'Fetched example.com',
+        createdAt: '2026-02-28T10:02:30.000Z',
+        streaming: false,
+        statusTag: null,
+        trace: {
+          kind: 'source_fetch',
+          title: 'Fetched example.com',
+          sourceUrl: 'https://example.com/result',
+          domain: 'example.com',
+          groupId: 'tool-1',
+        },
+      },
+      {
+        messageId: 'final-answer',
+        todoId: 'todo-1',
+        runId: 'run-1',
+        role: 'assistant',
+        content: '## Final\n- Vendor shortlist ready',
+        createdAt: '2026-02-28T10:03:00.000Z',
+        streaming: false,
+        statusTag: null,
+      },
+    ]);
+
+    render(<App />);
+    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+
+    expect(await screen.findByText('Thought')).toBeInTheDocument();
+    expect(screen.getByText('Actions')).toBeInTheDocument();
+    expect(screen.getByText('Sources')).toBeInTheDocument();
+    expect(screen.getByText(/Fetched 1 source/i)).toBeInTheDocument();
+    expect(screen.getByText(/Final result/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\"query\"/i)).not.toBeInTheDocument();
+
+    for (const button of screen.getAllByRole('button', { name: /Show details/i })) {
+      await user.click(button as HTMLButtonElement);
+    }
+    expect(screen.getByText(/\"query\"/i)).toBeInTheDocument();
+  });
+
+  it('hides raw streaming assistant text while selected task is actively running', async () => {
+    const user = userEvent.setup();
+    state.feed.activeRunTodoId = 'todo-1';
+    state.threads.set('todo-1', [
+      {
+        messageId: 'active-trace',
+        todoId: 'todo-1',
+        runId: 'run-active',
+        role: 'status',
+        content: 'Run started',
+        createdAt: '2026-02-28T10:05:00.000Z',
+        streaming: false,
+        statusTag: 'started',
+        trace: {
+          kind: 'phase',
+          title: 'Run started',
+          phase: 'started',
+          groupId: 'run-active',
+        },
+      },
+      {
+        messageId: 'active-stream',
+        todoId: 'todo-1',
+        runId: 'run-active',
+        role: 'assistant',
+        content: 'Progress update Progress update Progress update',
+        createdAt: '2026-02-28T10:05:10.000Z',
+        streaming: true,
+        statusTag: 'streaming',
+      },
+    ]);
+
+    render(<App />);
+    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+
+    expect(await screen.findByText('Run started')).toBeInTheDocument();
+    expect(screen.queryByText(/Progress update Progress update/i)).not.toBeInTheDocument();
+  });
+
+  it('hides warning banner persistently when dismissed', async () => {
+    const user = userEvent.setup();
+    state.feed.warning = 'Using cached richer notes for 5 meeting(s).';
+    state.feed.warningDetails = ['Retained 6 cached meeting(s) outside the current live window.'];
+
+    const view = render(<App />);
+
+    expect(await screen.findByText(/Using cached richer notes/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Hide' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Using cached richer notes/i)).not.toBeInTheDocument();
+    });
+
+    view.unmount();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Using cached richer notes/i)).not.toBeInTheDocument();
+    });
   });
 });

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GranolaTaskService } from './task-service.js';
 import type { GranolaMeeting } from '../../../../packages/granola-pipeline/src/types.js';
-import type { TaskChatMessage } from '../../src/shared/types.js';
+import type { TaskChatMessage, TaskChatTrace } from '../../src/shared/types.js';
 
 const tempDirs: string[] = [];
 
@@ -891,5 +891,235 @@ describe('GranolaTaskService', () => {
     expect(secondPage.loadedAt).toBeTruthy();
 
     await service.dispose();
+  });
+
+  it('merges snapshot and delta chunks without duplicate assistant output', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Delta merge task',
+              description: 'Verify snapshot + delta dedupe.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-delta', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const done = deferred<{ ok: boolean; runId: string; summary: string; finalText: string }>();
+    let emitRunEvent: ((event: Record<string, unknown>) => void) | undefined;
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: {
+        startRun: ReturnType<typeof vi.fn>;
+      };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(({ onEvent: callback }: { onEvent: (event: Record<string, unknown>) => void }) => {
+      emitRunEvent = callback;
+      return {
+        cancel: vi.fn(),
+        done: done.promise,
+      };
+    });
+
+    const started = await service.tasksStart(String(todoId));
+    expect(started.ok).toBe(true);
+    await waitUntil(() => typeof emitRunEvent === 'function');
+    if (!emitRunEvent) {
+      throw new Error('Missing onEvent callback');
+    }
+
+    emitRunEvent({
+      runId: 'run-delta',
+      kind: 'delta',
+      message: 'Progress update',
+      delta: 'Progress update',
+      snapshot: 'Progress update',
+    });
+    emitRunEvent({
+      runId: 'run-delta',
+      kind: 'delta',
+      message: 'Progress update complete',
+      delta: ' complete',
+      snapshot: 'Progress update complete',
+    });
+    emitRunEvent({
+      runId: 'run-delta',
+      kind: 'delta',
+      message: 'Progress update complete',
+      delta: ' complete',
+      snapshot: 'Progress update complete',
+    });
+
+    done.resolve({
+      ok: true,
+      runId: 'run-delta',
+      summary: 'done',
+      finalText: 'Progress update complete',
+    });
+
+    await waitUntil(() => service.getFeed().activeRunTodoId === null);
+    const thread = await service.tasksGetThread(String(todoId), null, 80);
+    const assistant = [...thread.messages].reverse().find((message) => message.role === 'assistant');
+    expect(assistant?.content).toBe('Progress update complete');
+
+    await service.dispose();
+  });
+
+  it('records thought/tool/source traces and completion phase for timeline chat', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Trace timeline task',
+              description: 'Ensure trace events are persisted.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-trace', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const done = deferred<{ ok: boolean; runId: string; summary: string; finalText: string }>();
+    let emitRunEvent: ((event: Record<string, unknown>) => void) | undefined;
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: {
+        startRun: ReturnType<typeof vi.fn>;
+      };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(({ onEvent: callback }: { onEvent: (event: Record<string, unknown>) => void }) => {
+      emitRunEvent = callback;
+      return {
+        cancel: vi.fn(),
+        done: done.promise,
+      };
+    });
+
+    const started = await service.tasksStart(String(todoId));
+    expect(started.ok).toBe(true);
+    await waitUntil(() => typeof emitRunEvent === 'function');
+    if (!emitRunEvent) {
+      throw new Error('Missing onEvent callback');
+    }
+
+    emitRunEvent({
+      runId: 'run-trace',
+      kind: 'thinking',
+      message: 'Thinking',
+      delta:
+        'Gathering relevant links, deciding sequence, and validating confidence before composing the final result output.',
+    });
+    emitRunEvent({
+      runId: 'run-trace',
+      kind: 'tool',
+      message: 'Starting web search',
+      tool: {
+        phase: 'start',
+        name: 'web_search',
+        toolCallId: 'tool-1',
+        args: { query: 'yogurt workflow ui' },
+        meta: null,
+        isError: false,
+      },
+    });
+    emitRunEvent({
+      runId: 'run-trace',
+      kind: 'tool',
+      message: 'web search completed',
+      tool: {
+        phase: 'result',
+        name: 'web_search',
+        toolCallId: 'tool-1',
+        args: { query: 'yogurt workflow ui' },
+        meta: {
+          resultUrl: 'https://example.com/search-result',
+        },
+        isError: false,
+      },
+    });
+
+    done.resolve({
+      ok: true,
+      runId: 'run-trace',
+      summary: 'done',
+      finalText: 'Final research summary.',
+    });
+
+    await waitUntil(() => service.getFeed().activeRunTodoId === null);
+    const thread = await service.tasksGetThread(String(todoId), null, 120);
+    const traces = thread.messages.map((item) => item.trace).filter((trace): trace is TaskChatTrace => Boolean(trace));
+
+    expect(traces.some((trace) => trace.kind === 'thought')).toBe(true);
+    expect(traces.some((trace) => trace.kind === 'tool_start' && trace.toolName === 'web_search')).toBe(true);
+    expect(traces.some((trace) => trace.kind === 'tool_result' && trace.toolName === 'web_search')).toBe(true);
+    expect(traces.some((trace) => trace.kind === 'source_fetch' && trace.sourceUrl?.includes('example.com'))).toBe(true);
+    expect(traces.some((trace) => trace.kind === 'phase' && trace.phase === 'completed')).toBe(true);
+
+    await service.dispose();
+
+    const reloaded = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+    await reloaded.init();
+    const reloadedThread = await reloaded.tasksGetThread(String(todoId), null, 120);
+    expect(reloadedThread.messages.some((message) => message.trace?.kind === 'source_fetch')).toBe(true);
+    expect(reloadedThread.messages.some((message) => message.role === 'assistant')).toBe(true);
+    await reloaded.dispose();
   });
 });

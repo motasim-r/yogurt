@@ -16,7 +16,7 @@ import { EncryptedTokenStore } from '../../../../packages/granola-pipeline/src/t
 import { TodoStore } from '../../../../packages/granola-pipeline/src/todo-store.js';
 import { TaskChatStore, type TaskChatStoreDocument } from './chat-store.js';
 import { OAuthCallbackServer } from './oauth-callback.js';
-import { IronclawRuntime } from '../../../../packages/execution-ironclaw/src/ironclaw-runtime.js';
+import { IronclawRuntime, type IronclawToolPayload } from '../../../../packages/execution-ironclaw/src/ironclaw-runtime.js';
 import { migrateLegacyOpenclawData, type LegacyDataMigrationStatus } from './data-migration.js';
 import {
   loadMeetingsWithClient,
@@ -36,6 +36,7 @@ import type {
 import type {
   GranolaAuthStatus,
   TaskChatMessage,
+  TaskChatTrace,
   TaskChatThreadPage,
   TaskExecutionPhase,
   TaskExecutorConnection,
@@ -48,6 +49,8 @@ import type {
   TasksSyncHealth,
   TasksConnectionState,
 } from '../../src/shared/types.js';
+
+const URL_MATCHER = /https?:\/\/[^\s"'`<>]+/g;
 
 interface GranolaTaskServiceOptions {
   dataDir: string;
@@ -186,6 +189,126 @@ function clampText(value: string, maxLength: number): string {
     return value;
   }
   return `${value.slice(0, maxLength)}...`;
+}
+
+function normalizeTraceString(value: unknown, maxLength = 1200): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? clampText(trimmed, maxLength) : null;
+  }
+  try {
+    return clampText(JSON.stringify(value, null, 2), maxLength);
+  } catch {
+    return clampText(String(value), maxLength);
+  }
+}
+
+function toolLabel(name: string): string {
+  return name.replace(/[_-]+/g, ' ').trim() || 'tool';
+}
+
+function extractUrlCandidates(value: unknown, output: Set<string>, limit = 16, depth = 0): void {
+  if (output.size >= limit || depth > 6 || value === null || value === undefined) {
+    return;
+  }
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(URL_MATCHER)) {
+      const raw = match[0]?.replace(/[),.;\]}]+$/g, '');
+      if (!raw) {
+        continue;
+      }
+      output.add(raw);
+      if (output.size >= limit) {
+        return;
+      }
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractUrlCandidates(item, output, limit, depth + 1);
+      if (output.size >= limit) {
+        return;
+      }
+    }
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      extractUrlCandidates(nested, output, limit, depth + 1);
+      if (output.size >= limit) {
+        return;
+      }
+    }
+  }
+}
+
+function domainFromUrl(value: string): string | null {
+  try {
+    return new URL(value).hostname.replace(/^www\./, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+function overlapSuffixPrefix(current: string, chunk: string): number {
+  const maxLength = Math.min(current.length, chunk.length);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (current.endsWith(chunk.slice(0, length))) {
+      return length;
+    }
+  }
+  return 0;
+}
+
+function mergeAssistantBuffer(
+  current: string,
+  incomingDelta: string | undefined,
+  incomingSnapshot: string | undefined,
+): { next: string; emittedDelta: string; changed: boolean } {
+  const delta = (incomingDelta ?? '').toString();
+  const snapshot = (incomingSnapshot ?? '').toString();
+
+  if (snapshot) {
+    if (snapshot === current) {
+      return { next: current, emittedDelta: '', changed: false };
+    }
+    if (snapshot.startsWith(current)) {
+      return {
+        next: snapshot,
+        emittedDelta: snapshot.slice(current.length),
+        changed: true,
+      };
+    }
+    if (!current.startsWith(snapshot) && !delta && snapshot.length > current.length) {
+      return {
+        next: snapshot,
+        emittedDelta: snapshot,
+        changed: true,
+      };
+    }
+  }
+
+  if (!delta) {
+    return { next: current, emittedDelta: '', changed: false };
+  }
+  if (current.endsWith(delta)) {
+    return { next: current, emittedDelta: '', changed: false };
+  }
+
+  const overlap = overlapSuffixPrefix(current, delta);
+  const appendChunk = delta.slice(overlap);
+  if (!appendChunk) {
+    return { next: current, emittedDelta: '', changed: false };
+  }
+  return {
+    next: `${current}${appendChunk}`,
+    emittedDelta: appendChunk,
+    changed: true,
+  };
 }
 
 function chatSortKey(message: TaskChatMessage): number {
@@ -634,6 +757,8 @@ export class GranolaTaskService {
 
   private readonly ironclaw: IronclawRuntime;
 
+  private readonly chatTimelineV2Enabled: boolean;
+
   private readonly realtimeEvents = new EventEmitter();
 
   private readonly uiRefreshMs = 5000;
@@ -751,6 +876,7 @@ export class GranolaTaskService {
     this.ironclawAgentId = options.ironclawAgentId ?? 'main';
     this.legacyDataDir = options.legacyDataDir ?? '/Users/motasimrahman/Desktop/granola-openclaw/data';
     this.canonicalProjectPath = options.canonicalProjectPath ?? process.cwd();
+    this.chatTimelineV2Enabled = process.env.CHAT_TIMELINE_V2 !== '0';
     this.ironclaw = new IronclawRuntime({
       profile: this.ironclawProfile,
     });
@@ -1218,6 +1344,7 @@ export class GranolaTaskService {
       createdAt?: string;
       streaming?: boolean;
       statusTag?: TaskExecutionPhase | null;
+      trace?: TaskChatTrace | null;
       messageId?: string;
       emitRealtime?: boolean;
     },
@@ -1232,6 +1359,7 @@ export class GranolaTaskService {
       createdAt,
       streaming: options?.streaming === true,
       statusTag: options?.statusTag ?? null,
+      trace: options?.trace ?? null,
     };
     const thread = this.ensureThread(todoId);
     thread.push(message);
@@ -1257,6 +1385,7 @@ export class GranolaTaskService {
     todoId: string,
     messageId: string,
     updater: (message: TaskChatMessage) => TaskChatMessage,
+    options?: { emitRealtime?: boolean },
   ): TaskChatMessage | null {
     const thread = this.chatState.threads[todoId];
     if (!thread) {
@@ -1270,7 +1399,97 @@ export class GranolaTaskService {
 
     const next = updater(thread[index] as TaskChatMessage);
     thread[index] = next;
+    if (options?.emitRealtime === true) {
+      this.emitRealtimeEvent({
+        type: 'task-chat-message',
+        todoId,
+        message: next,
+      });
+    }
     return next;
+  }
+
+  private appendTraceMessage(
+    todoId: string,
+    runId: string | null,
+    trace: TaskChatTrace,
+    options?: {
+      createdAt?: string;
+      emitRealtime?: boolean;
+      persist?: boolean;
+    },
+  ): TaskChatMessage {
+    const message = this.appendThreadMessage(todoId, 'status', trace.title, {
+      runId,
+      createdAt: options?.createdAt,
+      statusTag: trace.phase ?? null,
+      trace,
+      emitRealtime: options?.emitRealtime,
+    });
+    if (options?.persist !== false) {
+      this.queueChatPersist();
+    }
+    return message;
+  }
+
+  private upsertThinkingGroup(
+    todoId: string,
+    runId: string | null,
+    groupId: string,
+    detail: string,
+    existingMessageId: string | null,
+  ): string {
+    const nextTrace: TaskChatTrace = {
+      kind: 'thought',
+      title: 'Thinking through the approach',
+      detail: clampText(detail.trim(), 2000),
+      groupId,
+      phase: 'thinking',
+    };
+    if (!existingMessageId) {
+      return this.appendTraceMessage(todoId, runId, nextTrace).messageId;
+    }
+    const updated = this.updateThreadMessage(
+      todoId,
+      existingMessageId,
+      (message) => ({
+        ...message,
+        runId: runId ?? message.runId,
+        content: nextTrace.title,
+        streaming: false,
+        statusTag: 'thinking',
+        trace: nextTrace,
+      }),
+      { emitRealtime: true },
+    );
+    if (updated) {
+      this.queueChatPersist();
+      return existingMessageId;
+    }
+    return this.appendTraceMessage(todoId, runId, nextTrace).messageId;
+  }
+
+  private appendToolTrace(todoId: string, runId: string | null, tool: IronclawToolPayload): TaskChatMessage {
+    const isStart = tool.phase === 'start';
+    const traceKind: TaskChatTrace['kind'] = isStart ? 'tool_start' : 'tool_result';
+    const prettyName = toolLabel(tool.name);
+    const title = isStart ? `Starting ${prettyName}` : tool.isError ? `${prettyName} failed` : `${prettyName} completed`;
+    const primaryDetail =
+      normalizeTraceString((tool.args as Record<string, unknown> | null)?.query, 400) ||
+      normalizeTraceString((tool.args as Record<string, unknown> | null)?.url, 400) ||
+      normalizeTraceString((tool.args as Record<string, unknown> | null)?.targetUrl, 400) ||
+      null;
+
+    return this.appendTraceMessage(todoId, runId, {
+      kind: traceKind,
+      title,
+      detail: primaryDetail,
+      toolName: tool.name || null,
+      toolArgs: normalizeTraceString(tool.args, 1200),
+      toolMeta: normalizeTraceString(tool.meta, 1400),
+      isError: tool.isError,
+      groupId: tool.toolCallId,
+    });
   }
 
   private async ensureThreadsFromTodos(): Promise<void> {
@@ -2714,6 +2933,12 @@ export class GranolaTaskService {
     }
 
     let assistantMessageId: string | null = null;
+    let runStartTraceMessageId: string | null = null;
+    let thinkingTraceMessageId: string | null = null;
+    const thinkingGroupId = `thought-${request.executionId}`;
+    let thinkingBuffer = '';
+    let lastThinkingCheckpointAtMs = 0;
+    const emittedSourceUrls = new Set<string>();
     await this.withTodoStateWrite(async () => {
       const current = this.findTodo(request.todoId);
       if (!current) {
@@ -2737,12 +2962,30 @@ export class GranolaTaskService {
     });
 
     await this.withChatStateWrite(async () => {
-      this.appendThreadMessage(request.todoId, 'status', 'Run started.', {
-        statusTag: 'started',
-      });
+      if (this.chatTimelineV2Enabled) {
+        const startTrace = this.appendTraceMessage(
+          request.todoId,
+          todo.runId ?? null,
+          {
+            kind: 'phase',
+            title: 'Run started',
+            detail: request.source === 'chat' ? 'Started from chat instruction.' : 'Started from task list.',
+            phase: 'started',
+            groupId: request.executionId,
+          },
+          { persist: false },
+        );
+        runStartTraceMessageId = startTrace.messageId;
+      } else {
+        this.appendThreadMessage(request.todoId, 'status', 'Run started.', {
+          statusTag: 'started',
+        });
+      }
       const assistant = this.appendThreadMessage(request.todoId, 'assistant', '', {
+        runId: todo.runId ?? null,
         streaming: true,
         statusTag: 'thinking',
+        trace: null,
       });
       assistantMessageId = assistant.messageId;
     });
@@ -2765,22 +3008,125 @@ export class GranolaTaskService {
           current.runId = event.runId;
           current.openclaw.lastRunId = event.runId;
           running.runId = event.runId;
+          if (runStartTraceMessageId) {
+            this.updateThreadMessage(
+              request.todoId,
+              runStartTraceMessageId,
+              (message) => ({
+                ...message,
+                runId: event.runId,
+              }),
+              { emitRealtime: true },
+            );
+          }
+          if (thinkingTraceMessageId) {
+            this.updateThreadMessage(
+              request.todoId,
+              thinkingTraceMessageId,
+              (message) => ({
+                ...message,
+                runId: event.runId,
+              }),
+              { emitRealtime: true },
+            );
+          }
         }
 
         if (event.kind === 'started') {
           running.lastDeltaAtMs = Date.now();
           this.emitTaskChatStatus(request.todoId, running.runId, 'thinking', event.message || 'Thinking...');
           this.emitTaskRunEvent(request.todoId, running.runId, 'started', event.message || 'Task started in IronClaw.');
+          if (this.chatTimelineV2Enabled && runStartTraceMessageId) {
+            const updated = this.updateThreadMessage(
+              request.todoId,
+              runStartTraceMessageId,
+              (message) => ({
+                ...message,
+                content: 'Run started',
+                trace: {
+                  ...(message.trace ?? {
+                    kind: 'phase',
+                    title: 'Run started',
+                    phase: 'started' as const,
+                    groupId: request.executionId,
+                  }),
+                  detail: event.message || message.trace?.detail || null,
+                },
+              }),
+              { emitRealtime: true },
+            );
+            if (updated) {
+              this.queueChatPersist();
+            }
+          }
+          return;
+        }
+
+        if (event.kind === 'thinking') {
+          running.lastDeltaAtMs = Date.now();
+          const delta = event.delta ?? event.message;
+          if (!delta) {
+            return;
+          }
+          thinkingBuffer = `${thinkingBuffer}${delta}`;
+          const nowMs = Date.now();
+          const shouldCheckpoint =
+            thinkingBuffer.trim().length >= 140 && nowMs - lastThinkingCheckpointAtMs >= 900;
+          if (!shouldCheckpoint) {
+            return;
+          }
+          thinkingTraceMessageId = this.upsertThinkingGroup(
+            request.todoId,
+            running.runId,
+            thinkingGroupId,
+            thinkingBuffer,
+            thinkingTraceMessageId,
+          );
+          lastThinkingCheckpointAtMs = nowMs;
+          this.emitTaskChatStatus(request.todoId, running.runId, 'thinking', 'Thinking through tool strategy…');
+          this.emitFeedUpdated();
+          return;
+        }
+
+        if (event.kind === 'tool' && event.tool) {
+          running.lastDeltaAtMs = Date.now();
+          if (this.chatTimelineV2Enabled) {
+            this.appendToolTrace(request.todoId, running.runId, event.tool);
+            if (event.tool.phase === 'result') {
+              const urls = new Set<string>();
+              extractUrlCandidates(event.tool.args, urls, 24);
+              extractUrlCandidates(event.tool.meta, urls, 24);
+              for (const sourceUrl of urls) {
+                if (emittedSourceUrls.has(sourceUrl)) {
+                  continue;
+                }
+                emittedSourceUrls.add(sourceUrl);
+                this.appendTraceMessage(request.todoId, running.runId, {
+                  kind: 'source_fetch',
+                  title: domainFromUrl(sourceUrl) ? `Fetched ${String(domainFromUrl(sourceUrl))}` : 'Fetched source',
+                  detail: sourceUrl,
+                  sourceUrl,
+                  domain: domainFromUrl(sourceUrl),
+                  groupId: event.tool.toolCallId,
+                });
+              }
+            }
+          }
+          this.emitTaskChatStatus(request.todoId, running.runId, 'working', event.message || 'Running tool step…');
+          this.emitFeedUpdated();
           return;
         }
 
         if (event.kind === 'delta') {
           running.lastDeltaAtMs = Date.now();
-          const delta = event.message;
-          latestSummary = `${latestSummary}${delta}`;
+          const merge = mergeAssistantBuffer(latestSummary, event.delta ?? event.message, event.snapshot);
+          if (!merge.changed) {
+            return;
+          }
+          latestSummary = merge.next;
           const normalized = clampText(latestSummary.trim(), 6000);
           current.publicSummary = normalized;
-          current.latestPublicStep = clampText(delta.trim() || normalized, 240);
+          current.latestPublicStep = clampText((merge.emittedDelta || event.delta || '').trim() || normalized, 240);
           current.updatedAt = nowIso();
 
           if (assistantMessageId) {
@@ -2790,15 +3136,22 @@ export class GranolaTaskService {
               content: normalized,
               streaming: true,
               statusTag: 'streaming',
+              trace: null,
             }));
             if (updatedMessage) {
-              this.emitTaskChatDelta(request.todoId, running.runId, assistantMessageId, delta, updatedMessage.content);
+              this.emitTaskChatDelta(
+                request.todoId,
+                running.runId,
+                assistantMessageId,
+                merge.emittedDelta || event.delta || event.message,
+                updatedMessage.content,
+              );
             }
             this.queueChatPersist();
           }
 
           this.emitTaskChatStatus(request.todoId, running.runId, 'streaming', 'Streaming latest research…');
-          this.emitTaskRunEvent(request.todoId, running.runId, 'delta', delta);
+          this.emitTaskRunEvent(request.todoId, running.runId, 'delta', merge.emittedDelta || event.message);
           this.emitFeedUpdated();
           return;
         }
@@ -2835,12 +3188,30 @@ export class GranolaTaskService {
     });
     this.emitFeedUpdated(true);
 
+    const flushPendingThinkingTrace = (runId: string | null): void => {
+      if (!this.chatTimelineV2Enabled) {
+        return;
+      }
+      if (!thinkingBuffer.trim()) {
+        return;
+      }
+      thinkingTraceMessageId = this.upsertThinkingGroup(
+        request.todoId,
+        runId,
+        thinkingGroupId,
+        thinkingBuffer,
+        thinkingTraceMessageId,
+      );
+      thinkingBuffer = '';
+    };
+
     void runHandle.done
       .then(async (result) => {
         const running = this.runningExecutions.get(request.todoId);
         if (running?.heartbeatTimer) {
           clearInterval(running.heartbeatTimer);
         }
+        flushPendingThinkingTrace(running?.runId ?? result.runId ?? todo.runId ?? null);
         this.runningExecutions.delete(request.todoId);
         this.activeExecutionTodoId = null;
         const cancelled = running?.cancelled === true;
@@ -2859,6 +3230,7 @@ export class GranolaTaskService {
         if (running?.heartbeatTimer) {
           clearInterval(running.heartbeatTimer);
         }
+        flushPendingThinkingTrace(running?.runId ?? todo.runId ?? null);
         this.runningExecutions.delete(request.todoId);
         this.activeExecutionTodoId = null;
         const message = safeErrorMessage(error);
@@ -2967,32 +3339,58 @@ export class GranolaTaskService {
 
     await this.withChatStateWrite(async () => {
       if (result.assistantMessageId) {
-        this.updateThreadMessage(todoId, result.assistantMessageId, (message) => ({
-          ...message,
-          runId: result.runId ?? message.runId,
-          content: clampText(result.finalText || message.content || result.summary, 6000),
-          streaming: false,
-          statusTag: null,
-        }));
+        this.updateThreadMessage(
+          todoId,
+          result.assistantMessageId,
+          (message) => ({
+            ...message,
+            runId: result.runId ?? message.runId,
+            content: clampText(result.finalText || message.content || result.summary, 6000),
+            streaming: false,
+            statusTag: null,
+            trace: null,
+          }),
+          { emitRealtime: true },
+        );
       } else {
         this.appendThreadMessage(todoId, 'assistant', clampText(result.finalText || result.summary, 6000), {
           runId: result.runId,
           streaming: false,
+          trace: null,
         });
       }
-      this.appendThreadMessage(
-        todoId,
-        'status',
-        result.cancelled
-          ? 'Run cancelled.'
-          : result.ok
-            ? 'Run completed.'
-            : `Run failed: ${result.error ?? result.summary}`,
-        {
-          runId: result.runId,
-          statusTag: completionPhase,
-        },
-      );
+      if (this.chatTimelineV2Enabled) {
+        this.appendTraceMessage(
+          todoId,
+          result.runId,
+          {
+            kind: 'phase',
+            title: result.cancelled ? 'Run cancelled' : result.ok ? 'Run completed' : 'Run failed',
+            detail: result.cancelled
+              ? result.error ?? 'Execution cancelled.'
+              : result.ok
+                ? result.summary
+                : result.error ?? result.summary,
+            phase: completionPhase,
+            groupId: result.runId,
+          },
+          { persist: false },
+        );
+      } else {
+        this.appendThreadMessage(
+          todoId,
+          'status',
+          result.cancelled
+            ? 'Run cancelled.'
+            : result.ok
+              ? 'Run completed.'
+              : `Run failed: ${result.error ?? result.summary}`,
+          {
+            runId: result.runId,
+            statusTag: completionPhase,
+          },
+        );
+      }
     });
 
     this.emitFeedUpdated(true);
