@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+  --font-sans: 'KMR Melange Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: 'Quadrant Notepad', 'KMR Melange Grotesk', 'Inter', sans-serif;
+  --font-heading: 'Season Serif', 'Quadrant Notepad', 'KMR Melange Grotesk', 'Inter', sans-serif;
+
+  --color-shell: #292929;
+  --color-sidebar: #212121;
+  --color-rail: #292929;
+  --color-surface-0: #2f2f2f;
+  --color-surface-1: #363635;
+  --color-surface-2: #4e4d4b;
+  --color-border-faint: rgba(255, 255, 255, 0.08);
+  --color-border-default: rgba(255, 255, 255, 0.15);
+
+  --color-text-primary: #fcfcf8;
+  --color-text-secondary: #d5d5d2;
+  --color-text-muted: #acada8;
+  --color-text-subtle: #9e9e99;
+  --color-text-dim: #72726e;
+  --color-text-accent: #788c15;
+
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-12: 12px;
+  --radius-pill: 999px;
+
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+
+  --sidebar-width: 192px;
+  --canvas-width: 1280px;
+  --timeline-width: 624px;
+}
+
+@font-face {
+  font-family: 'KMR Melange Grotesk';
+  src: url('/extracted/fonts/kmrmelangegrotesk-regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('/extracted/fonts/Inter-Regular.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Quadrant Notepad';
+  src: url('/extracted/fonts/QuadrantNotepad-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Season Serif';
+  src: url('/fonts/season/SeasonSerif-TRIAL-Regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}

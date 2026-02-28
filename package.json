@@ -1,0 +1,18 @@
+{
+  "name": "@yogurt/monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run -w @yogurt/desktop dev",
+    "build": "npm run -w @yogurt/desktop build",
+    "test": "npm run -w @yogurt/desktop test",
+    "typecheck": "npm run -w @yogurt/desktop typecheck",
+    "doctor": "node scripts/doctor.mjs",
+    "desktop:dev": "npm run -w @yogurt/desktop dev",
+    "desktop:start": "npm run -w @yogurt/desktop start"
+  }
+}

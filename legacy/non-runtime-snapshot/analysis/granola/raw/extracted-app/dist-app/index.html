@@ -1,0 +1,101 @@
+<!DOCTYPE html><html lang="en"><head><link rel="modulepreload" href="assets/observers-DohMzB7_.js" integrity="sha384-WO5lfaMqJkDpbemmz15JEVnEAz/dOW8vpcPmGT9ryinr/4+7LiKk0fpSGQs8bsqx" crossorigin="anonymous"><link rel="modulepreload" href="assets/rrweb-record-J7IjRQDE.js" integrity="sha384-xePISGAkLL5wbduVXubBdI33zHe3Nis/i8owKRVhigD2i6CSz2G1tmUXjzvwDO3e" crossorigin="anonymous"><link rel="modulepreload" href="assets/rrweb-plugin-console-record-B9UBSauH.js" integrity="sha384-KvF47v7OxR8CbRzmr4GNDnWjqzBxllTfpZQT0BqsUaiROKVjez3HEURcMDfqjYOl" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-Sv27Ykxs.js" integrity="sha384-ABlRulVjuw3lU6fvdmkDx5ElVLqkN8gbqzUqqwDU9qRspKVtIlUNPp4xoSaPtw3J" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-CHx3lakx.js" integrity="sha384-raVvNaFEc1EgsAfxmTDALChu6m/WtmIOXTGFAiZkbkVmaSjY35p58wXkRJOhMYfT" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-QhmxEEHN.js" integrity="sha384-H3XUEJJ5ShY845YSq/gMHnQ3yHxNinWCOQj3lekfqa/dML4c4eoYLMT7iWHQ9uBd" crossorigin="anonymous"><link rel="modulepreload" href="assets/cacheStore-fi4qkUF1.js" integrity="sha384-QTRLfFRQxi8AH9c5dPSAQE2USrTMB1lDHbf4ct712IGVabDraSZgW3s564PSYTVs" crossorigin="anonymous"><link rel="modulepreload" href="assets/getAPIEndpointInWindow-DWaV4NYo.js" integrity="sha384-SAyV6Nv2KpAfGtrmVG1vo8aXGgV2GT8r2QxI9qUZxDymvA40NStgrck7yvdCP1MV" crossorigin="anonymous"><link rel="modulepreload" href="assets/loadCognitoIdentity-BNVb-H7P.js" integrity="sha384-eGU+dVDaZ5b+ZJL8sPfXS0TPTl4UA86o7pOBp6PZNRWQfqwkgffsAd7McN7W0DXv" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-BzuXsCFS.js" integrity="sha384-7N28OYZJc9lmDpKZ4d5f8vwoCrUBf9ELr6NwXMpE9xtYppRYZISkYlM4xwDlzqa6" crossorigin="anonymous"><link rel="modulepreload" href="assets/primary-C57AkUvt.js" integrity="sha384-18ui3TqDEgVJ+zhwSjZYlP4MqzcMU5NPfnNPiFCJSg66TRxvPEXJ6H1zAY69tbhj" crossorigin="anonymous"><link rel="modulepreload" href="assets/granolatalk-BIgUS8SE.js" integrity="sha384-RigNez6jjh/EpZ97e6osuGxcVJdaixZsDONeWiMN69diM1Z0KgA+0sAIn/XIsqok" crossorigin="anonymous"><link rel="modulepreload" href="assets/notch-BrmG3Je2.js" integrity="sha384-FoPoDeL/i+rFs5og5dDyXZmCVr/11R+qlC0Duk4P20h+dBWiubZG1/qb5lMohQ2P" crossorigin="anonymous"><link rel="modulepreload" href="assets/nub-banner-DZwYCmmF.js" integrity="sha384-pgHnSs8fgJ3wQtcb4cjTJOdFCPmq5uD4U2e+Z2Ad4yS30zypiFhLayDKggw66ETZ" crossorigin="anonymous"><link rel="modulepreload" href="assets/nub-D6AxGpnC.js" integrity="sha384-Ot0JuMQBRMcEFHxkhB2e9fQk8hkTfF4jLx19Zu1y1mpXEzL8XIJIhw/Ie7EyXe0C" crossorigin="anonymous"><link rel="modulepreload" href="assets/notification-CYIo3zqz.js" integrity="sha384-g2mvxQbLmEfBWM3p5LGaXEGRoFcUHGBHPpk8OpagreYoCY60AiBQOkwwtWDEir88" crossorigin="anonymous">
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+    <!-- <meta
+      http-equiv="Content-Security-Policy"
+      content="child-src 'self' blob:; worker-src 'self' blob:; script-src 'self' 'unsafe-inline' https://cdn.lr-ingest.io https://cdn.lr-in.com https://cdn.lr-in-prod.com https://cdn.lr-in-prod.com https://cdn.lr-ingest.com;"
+    /> -->
+    <style>
+      /* Enable dragging for the nub */
+      body.nub {
+        -webkit-user-select: none;
+        -webkit-app-region: drag;
+      }
+
+      body.nub .disable-drag {
+        -webkit-app-region: no-drag;
+      }
+
+      /* GranolaTalk window styling */
+      body.granolatalk {
+        background: transparent !important;
+        overflow: hidden;
+      }
+
+      /* Looping logo stroke animation for active dictation */
+      @keyframes gtLogoStroke {
+        0% {
+          stroke-dashoffset: 4200;
+        }
+        50% {
+          stroke-dashoffset: 8400;
+        }
+        100% {
+          stroke-dashoffset: 12600;
+        }
+      }
+      @keyframes gtLogoStrokeGlow1 {
+        0% {
+          stroke-dashoffset: 4200;
+          opacity: 0.6;
+        }
+        50% {
+          stroke-dashoffset: 8400;
+          opacity: 0.8;
+        }
+        100% {
+          stroke-dashoffset: 12600;
+          opacity: 0.6;
+        }
+      }
+      @keyframes gtLogoStrokeGlow2 {
+        0% {
+          stroke-dashoffset: 4400;
+          opacity: 0.5;
+        }
+        50% {
+          stroke-dashoffset: 8600;
+          opacity: 0.7;
+        }
+        100% {
+          stroke-dashoffset: 12800;
+          opacity: 0.5;
+        }
+      }
+      @keyframes gtLogoStrokeGlow3 {
+        0% {
+          stroke-dashoffset: 4600;
+          opacity: 0.4;
+        }
+        50% {
+          stroke-dashoffset: 8800;
+          opacity: 0.6;
+        }
+        100% {
+          stroke-dashoffset: 13000;
+          opacity: 0.4;
+        }
+      }
+
+      /* Gentle pulse for the stopping/processing state */
+      @keyframes gtPulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+    </style>
+    <title>Granola</title>
+    <script type="module" crossorigin="anonymous" src="./assets/index-Cnk1amp1.js" integrity="sha384-QghzmoMIqJ/hhSau1bpcbXbM+IbEyPnw8x5a8yRHEktARWfbw2HNNhThfND8hC8t"></script>
+    <link rel="stylesheet" crossorigin="anonymous" href="./assets/index-CiyuIfNE.css" integrity="sha384-Hzg4mAiYTz5QHX5etx8hJ93NRxHHjze+g9suUJjGRBTO7OlMRO+nv6s/yXUcdd4M">
+      <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
+  </head>
+  <body class="antialiased">
+    <div id="root"></div>
+  
+
+</body></html>

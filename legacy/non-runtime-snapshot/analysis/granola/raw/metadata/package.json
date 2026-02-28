@@ -1,0 +1,58 @@
+{
+  "name": "@granola/electron",
+  "private": true,
+  "productName": "Granola",
+  "version": "7.30.1",
+  "author": {
+    "name": "Granola",
+    "email": "hey@granola.so"
+  },
+  "main": "dist-electron/main/index.js",
+  "debug": {
+    "env": {
+      "VITE_DEV_SERVER_URL": "http://127.0.0.1:7777/"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/granola-inc/granola-electron.git"
+  },
+  "dependencies": {
+    "@amplitude/analytics-node": "catalog:",
+    "@aws-sdk/client-cloudwatch": "catalog:",
+    "@aws-sdk/client-cloudwatch-logs": "catalog:",
+    "@aws-sdk/client-firehose": "catalog:",
+    "@aws-sdk/client-s3": "catalog:",
+    "@aws-sdk/credential-providers": "catalog:",
+    "@aws-sdk/types": "catalog:",
+    "@deepgram/sdk": "catalog:",
+    "@napi-rs/xattr": "^1.0.3",
+    "@opentelemetry/api": "catalog:",
+    "@opentelemetry/otlp-transformer": "catalog:",
+    "@opentelemetry/resources": "catalog:",
+    "@opentelemetry/sdk-logs": "catalog:",
+    "@opentelemetry/sdk-metrics": "catalog:",
+    "@sentry/electron": "catalog:",
+    "@smithy/shared-ini-file-loader": "catalog:",
+    "@speechmatics/real-time-client": "catalog:",
+    "archiver": "catalog:",
+    "atomically": "^2.1.0",
+    "dotenv": "catalog:",
+    "electron-devtools-installer": "^4.0.0",
+    "electron-updater": "^6.6.2",
+    "global-agent": "^3.0.0",
+    "is-online": "^12.0.2",
+    "keyspy": "^1.1.1",
+    "lodash": "catalog:",
+    "mac-ca": "^3.1.1",
+    "pidusage": "^4.0.1",
+    "serialize-error": "catalog:",
+    "unzipper": "^0.12.3",
+    "uuid": "catalog:",
+    "win-ca": "^3.5.0",
+    "winston": "catalog:",
+    "winston-transport": "catalog:",
+    "ws": "catalog:",
+    "zod": "catalog:"
+  }
+}

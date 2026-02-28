@@ -1,0 +1,23 @@
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Env
+.env
+.env.local
+
+# Node
+node_modules/
+
+# Build output
+apps/desktop/dist/
+apps/desktop/dist-electron/
+packages/**/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temporary and generated snapshots
+test-results/

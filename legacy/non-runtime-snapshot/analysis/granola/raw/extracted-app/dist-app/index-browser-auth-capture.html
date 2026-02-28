@@ -1,0 +1,220 @@
+<!DOCTYPE html><html lang="en"><head><link rel="modulepreload" href="assets/observers-DohMzB7_.js" integrity="sha384-WO5lfaMqJkDpbemmz15JEVnEAz/dOW8vpcPmGT9ryinr/4+7LiKk0fpSGQs8bsqx" crossorigin="anonymous"><link rel="modulepreload" href="assets/rrweb-record-J7IjRQDE.js" integrity="sha384-xePISGAkLL5wbduVXubBdI33zHe3Nis/i8owKRVhigD2i6CSz2G1tmUXjzvwDO3e" crossorigin="anonymous"><link rel="modulepreload" href="assets/rrweb-plugin-console-record-B9UBSauH.js" integrity="sha384-KvF47v7OxR8CbRzmr4GNDnWjqzBxllTfpZQT0BqsUaiROKVjez3HEURcMDfqjYOl" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-Sv27Ykxs.js" integrity="sha384-ABlRulVjuw3lU6fvdmkDx5ElVLqkN8gbqzUqqwDU9qRspKVtIlUNPp4xoSaPtw3J" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-CHx3lakx.js" integrity="sha384-raVvNaFEc1EgsAfxmTDALChu6m/WtmIOXTGFAiZkbkVmaSjY35p58wXkRJOhMYfT" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-QhmxEEHN.js" integrity="sha384-H3XUEJJ5ShY845YSq/gMHnQ3yHxNinWCOQj3lekfqa/dML4c4eoYLMT7iWHQ9uBd" crossorigin="anonymous"><link rel="modulepreload" href="assets/cacheStore-fi4qkUF1.js" integrity="sha384-QTRLfFRQxi8AH9c5dPSAQE2USrTMB1lDHbf4ct712IGVabDraSZgW3s564PSYTVs" crossorigin="anonymous"><link rel="modulepreload" href="assets/getAPIEndpointInWindow-DWaV4NYo.js" integrity="sha384-SAyV6Nv2KpAfGtrmVG1vo8aXGgV2GT8r2QxI9qUZxDymvA40NStgrck7yvdCP1MV" crossorigin="anonymous"><link rel="modulepreload" href="assets/loadCognitoIdentity-BNVb-H7P.js" integrity="sha384-eGU+dVDaZ5b+ZJL8sPfXS0TPTl4UA86o7pOBp6PZNRWQfqwkgffsAd7McN7W0DXv" crossorigin="anonymous"><link rel="modulepreload" href="assets/index-BzuXsCFS.js" integrity="sha384-7N28OYZJc9lmDpKZ4d5f8vwoCrUBf9ELr6NwXMpE9xtYppRYZISkYlM4xwDlzqa6" crossorigin="anonymous"><link rel="modulepreload" href="assets/primary-C57AkUvt.js" integrity="sha384-18ui3TqDEgVJ+zhwSjZYlP4MqzcMU5NPfnNPiFCJSg66TRxvPEXJ6H1zAY69tbhj" crossorigin="anonymous"><link rel="modulepreload" href="assets/granolatalk-BIgUS8SE.js" integrity="sha384-RigNez6jjh/EpZ97e6osuGxcVJdaixZsDONeWiMN69diM1Z0KgA+0sAIn/XIsqok" crossorigin="anonymous"><link rel="modulepreload" href="assets/notch-BrmG3Je2.js" integrity="sha384-FoPoDeL/i+rFs5og5dDyXZmCVr/11R+qlC0Duk4P20h+dBWiubZG1/qb5lMohQ2P" crossorigin="anonymous"><link rel="modulepreload" href="assets/nub-banner-DZwYCmmF.js" integrity="sha384-pgHnSs8fgJ3wQtcb4cjTJOdFCPmq5uD4U2e+Z2Ad4yS30zypiFhLayDKggw66ETZ" crossorigin="anonymous"><link rel="modulepreload" href="assets/nub-D6AxGpnC.js" integrity="sha384-Ot0JuMQBRMcEFHxkhB2e9fQk8hkTfF4jLx19Zu1y1mpXEzL8XIJIhw/Ie7EyXe0C" crossorigin="anonymous"><link rel="modulepreload" href="assets/notification-CYIo3zqz.js" integrity="sha384-g2mvxQbLmEfBWM3p5LGaXEGRoFcUHGBHPpk8OpagreYoCY60AiBQOkwwtWDEir88" crossorigin="anonymous">
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+    <!-- <meta
+      http-equiv="Content-Security-Policy"
+      content="child-src 'self' blob:; worker-src 'self' blob:; script-src 'self' 'unsafe-inline' https://cdn.lr-ingest.io https://cdn.lr-in.com https://cdn.lr-in-prod.com https://cdn.lr-in-prod.com https://cdn.lr-ingest.com;"
+    /> -->
+    <style>
+      /* Enable dragging for the nub */
+      body.nub {
+        -webkit-user-select: none;
+        -webkit-app-region: drag;
+      }
+
+      body.nub .disable-drag {
+        -webkit-app-region: no-drag;
+      }
+
+      /* GranolaTalk window styling */
+      body.granolatalk {
+        background: transparent !important;
+        overflow: hidden;
+      }
+
+      /* Looping logo stroke animation for active dictation */
+      @keyframes gtLogoStroke {
+        0% {
+          stroke-dashoffset: 4200;
+        }
+        50% {
+          stroke-dashoffset: 8400;
+        }
+        100% {
+          stroke-dashoffset: 12600;
+        }
+      }
+      @keyframes gtLogoStrokeGlow1 {
+        0% {
+          stroke-dashoffset: 4200;
+          opacity: 0.6;
+        }
+        50% {
+          stroke-dashoffset: 8400;
+          opacity: 0.8;
+        }
+        100% {
+          stroke-dashoffset: 12600;
+          opacity: 0.6;
+        }
+      }
+      @keyframes gtLogoStrokeGlow2 {
+        0% {
+          stroke-dashoffset: 4400;
+          opacity: 0.5;
+        }
+        50% {
+          stroke-dashoffset: 8600;
+          opacity: 0.7;
+        }
+        100% {
+          stroke-dashoffset: 12800;
+          opacity: 0.5;
+        }
+      }
+      @keyframes gtLogoStrokeGlow3 {
+        0% {
+          stroke-dashoffset: 4600;
+          opacity: 0.4;
+        }
+        50% {
+          stroke-dashoffset: 8800;
+          opacity: 0.6;
+        }
+        100% {
+          stroke-dashoffset: 13000;
+          opacity: 0.4;
+        }
+      }
+
+      /* Gentle pulse for the stopping/processing state */
+      @keyframes gtPulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+    </style>
+    <title>Granola</title>
+    <script type="module" crossorigin="anonymous" src="./assets/index-Cnk1amp1.js" integrity="sha384-QghzmoMIqJ/hhSau1bpcbXbM+IbEyPnw8x5a8yRHEktARWfbw2HNNhThfND8hC8t"></script>
+    <link rel="stylesheet" crossorigin="anonymous" href="./assets/index-CiyuIfNE.css" integrity="sha384-Hzg4mAiYTz5QHX5etx8hJ93NRxHHjze+g9suUJjGRBTO7OlMRO+nv6s/yXUcdd4M">
+      <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
+  
+<script>
+(function() {
+  var session = {"access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6InNzb19vaWRjX2tleV9wYWlyXzAxSlpKMFhCQktKUUZLV0tLMlRCMDM2UFNEIn0.eyJ3b3Jrb3NfaWQiOiJ1c2VyXzAxSzFYUUhTM0NBWlRBNzYxRjczQkVNSFAyIiwiZXh0ZXJuYWxfaWQiOiJmYzI5Y2JjMS1lNTMxLTRjNDItOTRhMi0yNmVmNWNlMGIyYmIiLCJpc3MiOiJodHRwczovL2F1dGguZ3Jhbm9sYS5haS91c2VyX21hbmFnZW1lbnQvY2xpZW50XzAxSlpKMFhCREFUOFBISldRWTA5WTBWRDYxIiwic3ViIjoidXNlcl8wMUsxWFFIUzNDQVpUQTc2MUY3M0JFTUhQMiIsInNpZCI6InNlc3Npb25fMDFLSEc5QTE2TkM0Sk5TVDM5MVpBWE5LUlQiLCJqdGkiOiIwMUtKRk40NEJZRE05NTZWWFJWQzk4OUU3QSIsImV4cCI6MTc3MjIyMTA4MSwiaWF0IjoxNzcyMTk5NDgxfQ.JMhlK0qq1aW6yshmx-9KhDAMrGTVxi9PDOmpaDCtOnd5NSiolRUnek1dmwC4zwN_MhvmnwAfd7VINqE-arJamfN_ADtlgAgBbifFfc-9dR_0IqHtXQ5K5uuzzOaK_0Wy5Vbv9d-h3cwxRXlQ5V3M3TiddE6M4ISwP70UwlAFXYl-UDJR5eDCUxvxBWORXmizzyAWEhZzUc8lAsRDuRgkniuH4qaJKo7NU8ZZIgddaEzKswyOIaEsfIb45bOAwP8nnSKBRoRGghsYLytcs3eWprevnr5GYFyMwGvk_kPy7Yg4Yhw352o3w8RhpwZZZHlW0UBL8NU0bXf8675zNNx7NQ", "session_id": "session_01KHG9A16NC4JNST391ZAXNKRT", "sign_in_method": "CrossAppAuth"};
+  localStorage.setItem('browserDevSession', JSON.stringify(session));
+
+  function parseParams() {
+    var q = new URLSearchParams(window.location.search);
+    var captureId = q.get('figmacapture');
+    var endpoint = q.get('figmaendpoint');
+    var selector = q.get('figmaselector') || 'body';
+    var delayRaw = q.get('figmadelay') || '700';
+    var delayMs = parseInt(delayRaw, 10);
+    if (!Number.isFinite(delayMs) || delayMs < 0) delayMs = 700;
+    return { captureId: captureId, endpoint: endpoint, selector: selector, delayMs: delayMs };
+  }
+
+  function ensureCaptureUI() {
+    var p = parseParams();
+    if (!p.captureId || !p.endpoint) return;
+
+    if (document.getElementById('figma-capture-bridge')) return;
+    var root = document.createElement('div');
+    root.id = 'figma-capture-bridge';
+    root.style.position = 'fixed';
+    root.style.top = '14px';
+    root.style.right = '14px';
+    root.style.zIndex = '2147483647';
+    root.style.display = 'flex';
+    root.style.gap = '8px';
+    root.style.alignItems = 'center';
+    root.style.fontFamily = 'Inter, system-ui, -apple-system, sans-serif';
+
+    var btn = document.createElement('button');
+    btn.textContent = 'Send Screen To Figma';
+    btn.style.border = '1px solid rgba(255,255,255,0.25)';
+    btn.style.borderRadius = '999px';
+    btn.style.padding = '8px 12px';
+    btn.style.background = 'rgba(17,17,17,0.82)';
+    btn.style.color = 'white';
+    btn.style.cursor = 'pointer';
+    btn.style.fontSize = '12px';
+
+    var status = document.createElement('span');
+    status.textContent = 'ready';
+    status.style.color = 'rgba(255,255,255,0.82)';
+    status.style.fontSize = '11px';
+
+    var hint = document.createElement('span');
+    hint.textContent = 'Shortcut: Cmd+Shift+F (Ctrl+Shift+F), or F8';
+    hint.style.color = 'rgba(255,255,255,0.68)';
+    hint.style.fontSize = '11px';
+
+    var isCapturing = false;
+
+    async function doCapture(trigger) {
+      if (isCapturing) return;
+      isCapturing = true;
+      btn.disabled = true;
+      btn.style.opacity = '0.7';
+      status.textContent = trigger ? ('capturing (' + trigger + ')...') : 'capturing...';
+      try {
+        if (!window.figma || !window.figma.captureForDesign) throw new Error('Capture script not ready');
+        var res = await window.figma.captureForDesign({
+          captureId: p.captureId,
+          endpoint: p.endpoint,
+          selector: p.selector,
+          delayMs: p.delayMs,
+          verbose: false
+        });
+        if (res && res.success) {
+          status.textContent = 'sent';
+        } else {
+          var msg = ((res && (res.error || res.message)) || '').toString().toLowerCase();
+          if (msg.indexOf('already submitted') !== -1) {
+            status.textContent = 'capture id used - open a new capture link';
+          } else {
+            status.textContent = 'failed';
+          }
+          console.error('figma capture failed', res);
+        }
+      } catch (err) {
+        var emsg = ((err && err.message) || '').toString().toLowerCase();
+        if (emsg.indexOf('already submitted') !== -1) {
+          status.textContent = 'capture id used - open a new capture link';
+        } else {
+          status.textContent = 'error';
+        }
+        console.error('figma capture error', err);
+      } finally {
+        isCapturing = false;
+        btn.disabled = false;
+        btn.style.opacity = '1';
+      }
+    }
+
+    btn.addEventListener('click', function() { doCapture('button'); });
+    document.addEventListener('keydown', function(ev) {
+      var fKey = (ev.key || '').toLowerCase() === 'f';
+      var isPrimaryHotkey = (ev.metaKey || ev.ctrlKey) && ev.shiftKey && fKey;
+      var isFallbackHotkey = (ev.key || '').toUpperCase() === 'F8';
+      var isCaptureHotkey = isPrimaryHotkey || isFallbackHotkey;
+      if (!isCaptureHotkey) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      doCapture(isPrimaryHotkey ? 'shortcut' : 'F8');
+    }, true);
+    root.appendChild(btn);
+    root.appendChild(status);
+    root.appendChild(hint);
+    document.body.appendChild(root);
+  }
+
+  window.addEventListener('DOMContentLoaded', ensureCaptureUI);
+  window.addEventListener('load', ensureCaptureUI);
+})();
+</script>
+<script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
+
+</head>
+  <body class="antialiased">
+    <div id="root"></div>
+  
+
+</body></html>

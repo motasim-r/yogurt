@@ -1,0 +1,10 @@
+{
+  "name": "@yogurt/granola-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "fast-xml-parser": "^5.3.5"
+  }
+}
