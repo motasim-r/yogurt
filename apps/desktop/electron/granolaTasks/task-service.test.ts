@@ -275,6 +275,45 @@ describe('GranolaTaskService', () => {
     await service.dispose();
   });
 
+  it('clears pending authorization with mismatched redirect URI and starts a new OAuth flow', async () => {
+    const dataDir = await makeTempDir();
+    const openExternal = vi.fn(async () => {});
+
+    const service = new GranolaTaskService({
+      dataDir,
+      openExternal,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    const mismatchedRedirect = encodeURIComponent('http://127.0.0.1:43112/oauth/callback');
+    setFreshPendingAuth(service, `https://example.com/oauth?redirect_uri=${mismatchedRedirect}`);
+    const state = (service as unknown as { authState: Record<string, unknown> }).authState;
+    state.codeVerifier = 'old-verifier';
+
+    const internals = service as unknown as {
+      ensureCallbackServerStarted: () => Promise<string>;
+      startGranolaAuthorization: (redirectUrl: string) => Promise<{ authenticated: boolean; authorizationUrl?: string }>;
+    };
+    internals.ensureCallbackServerStarted = vi.fn(async () => 'http://127.0.0.1:43110/oauth/callback');
+    const startSpy = vi.fn(async () => {
+      expect(state.pendingAuthorizationUrl).toBeUndefined();
+      expect(state.codeVerifier).toBeUndefined();
+      return { authenticated: false, authorizationUrl: 'https://fresh.example/oauth' };
+    });
+    internals.startGranolaAuthorization = startSpy;
+
+    const result = await service.connect();
+
+    expect(result.ok).toBe(true);
+    expect(result.needsBrowser).toBe(true);
+    expect(startSpy).toHaveBeenCalledWith('http://127.0.0.1:43110/oauth/callback');
+    expect(openExternal).toHaveBeenCalledWith('https://fresh.example/oauth');
+
+    await service.dispose();
+  });
+
   it('deduplicates rapid connect calls so browser opens once', async () => {
     const dataDir = await makeTempDir();
     const openExternal = vi.fn(async () => {
@@ -299,6 +338,37 @@ describe('GranolaTaskService', () => {
     expect(a.ok).toBe(true);
     expect(b.ok).toBe(true);
     expect(openExternal).toHaveBeenCalledTimes(1);
+
+    await service.dispose();
+  });
+
+  it('refuses opening pending authorization when redirect URI no longer matches callback server', async () => {
+    const dataDir = await makeTempDir();
+    const openExternal = vi.fn(async () => {});
+
+    const service = new GranolaTaskService({
+      dataDir,
+      openExternal,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    const mismatchedRedirect = encodeURIComponent('http://127.0.0.1:43112/oauth/callback');
+    setFreshPendingAuth(service, `https://example.com/oauth?redirect_uri=${mismatchedRedirect}`);
+    (
+      service as unknown as {
+        ensureCallbackServerStarted: () => Promise<string>;
+      }
+    ).ensureCallbackServerStarted = vi.fn(async () => 'http://127.0.0.1:43110/oauth/callback');
+
+    const result = await service.openPendingAuthorization();
+    const state = (service as unknown as { authState: Record<string, unknown> }).authState;
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/stale/i);
+    expect(state.pendingAuthorizationUrl).toBeUndefined();
+    expect(openExternal).not.toHaveBeenCalled();
 
     await service.dispose();
   });

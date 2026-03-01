@@ -1237,7 +1237,7 @@ export class GranolaTaskService {
     this.callbackServer = new OAuthCallbackServer({
       host: options.callbackHost ?? '127.0.0.1',
       preferredPort: options.callbackPort ?? 43110,
-      maxPort: options.callbackMaxPort ?? 43130,
+      maxPort: options.callbackMaxPort ?? options.callbackPort ?? 43110,
       callbackPath: '/oauth/callback',
     });
 
@@ -1556,6 +1556,61 @@ export class GranolaTaskService {
     return true;
   }
 
+  private normalizeRedirectUri(value: string): string | null {
+    try {
+      const parsed = new URL(value);
+      const normalizedPath = parsed.pathname.replace(/\/+$/, '') || '/';
+      const normalizedPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+      return `${parsed.protocol}//${parsed.hostname.toLowerCase()}:${normalizedPort}${normalizedPath}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private pendingAuthorizationRedirectMatches(expectedRedirectUrl: string): boolean {
+    const pendingAuthorizationUrl = String(this.authState.pendingAuthorizationUrl ?? '').trim();
+    if (!pendingAuthorizationUrl) {
+      return false;
+    }
+
+    try {
+      const pendingAuthorization = new URL(pendingAuthorizationUrl);
+      const redirectParam = pendingAuthorization.searchParams.get('redirect_uri');
+      if (!redirectParam) {
+        return true;
+      }
+
+      const normalizedPendingRedirect = this.normalizeRedirectUri(redirectParam);
+      const normalizedExpectedRedirect = this.normalizeRedirectUri(expectedRedirectUrl);
+      return Boolean(
+        normalizedPendingRedirect &&
+          normalizedExpectedRedirect &&
+          normalizedPendingRedirect === normalizedExpectedRedirect,
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private invalidateMismatchedPendingAuthorization(expectedRedirectUrl: string): boolean {
+    if (!this.isPendingAuthorizationFresh()) {
+      return false;
+    }
+
+    if (!this.authState.pendingAuthorizationUrl) {
+      return false;
+    }
+
+    if (this.pendingAuthorizationRedirectMatches(expectedRedirectUrl)) {
+      return false;
+    }
+
+    this.clearPendingAuthorization({
+      clearCodeVerifier: true,
+    });
+    return true;
+  }
+
   private captureAuthHttpFailure(status: number, bodyText: string): void {
     const snippet = clampText(String(bodyText || '').trim(), 240);
     let errorCode: string | null = null;
@@ -1585,6 +1640,10 @@ export class GranolaTaskService {
   private normalizeAuthFailure(error: unknown): string {
     const diagnostic = this.lastAuthHttpDiagnostic;
     const raw = safeErrorMessage(error).trim();
+
+    if (raw.includes('Unable to start OAuth callback server on')) {
+      return 'Unable to start the local OAuth callback server on port 43110. Another process may be using it. Close other Yogurt/Electron instances and reconnect Granola.';
+    }
 
     if (diagnostic?.status === 401 && (diagnostic.errorCode === 'unauthorized' || !diagnostic.errorCode)) {
       return 'Authorization code was rejected or expired. Click Connect Granola to start a new authorization.';
@@ -2658,6 +2717,10 @@ export class GranolaTaskService {
       }
 
       const redirectUrl = await this.ensureCallbackServerStarted();
+      const mismatchedPendingCleared = this.invalidateMismatchedPendingAuthorization(redirectUrl);
+      if (mismatchedPendingCleared) {
+        await this.persistAuthState();
+      }
 
       if (this.isPendingAuthorizationFresh() && this.authState.pendingAuthorizationUrl) {
         this.setAuthStage('authorizing');
@@ -2717,18 +2780,27 @@ export class GranolaTaskService {
       await this.persistAuthState();
     }
 
-    const pendingAuthorizationUrl = this.isPendingAuthorizationFresh()
-      ? String(this.authState.pendingAuthorizationUrl ?? '').trim()
-      : '';
-    if (!pendingAuthorizationUrl) {
-      return {
-        ok: false,
-        message: 'No pending authorization URL. Click Connect Granola to start a new authorization.',
-      };
-    }
-
     try {
-      await this.ensureCallbackServerStarted();
+      const redirectUrl = await this.ensureCallbackServerStarted();
+      const mismatchedPendingCleared = this.invalidateMismatchedPendingAuthorization(redirectUrl);
+      if (mismatchedPendingCleared) {
+        await this.persistAuthState();
+        return {
+          ok: false,
+          message: 'Pending authorization URL is stale. Click Connect Granola to start a new authorization.',
+        };
+      }
+
+      const pendingAuthorizationUrl = this.isPendingAuthorizationFresh()
+        ? String(this.authState.pendingAuthorizationUrl ?? '').trim()
+        : '';
+      if (!pendingAuthorizationUrl) {
+        return {
+          ok: false,
+          message: 'No pending authorization URL. Click Connect Granola to start a new authorization.',
+        };
+      }
+
       this.setAuthStage('authorizing');
       this.authState.lastAuthError = null;
       await this.persistAuthState();
