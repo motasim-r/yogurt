@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { IPC_CHANNELS } from '../src/shared/channels.js';
-import type { WindowCommand } from '../src/shared/types.js';
+import type { TaskStartOptions, WindowCommand } from '../src/shared/types.js';
 import { InMemoryGranolaService } from './store.js';
 import { GranolaTaskService } from './granolaTasks/task-service.js';
 
@@ -96,11 +96,29 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.tasksConnect, () => withTaskService().connect());
   ipcMain.handle(IPC_CHANNELS.tasksOpenPendingAuth, () => withTaskService().openPendingAuthorization());
   ipcMain.handle(IPC_CHANNELS.tasksSyncNow, () => withTaskService().syncNow());
-  ipcMain.handle(IPC_CHANNELS.tasksStart, (_event, todoId: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.tasksGetPlanningContext, (_event, todoId: unknown) => {
     if (typeof todoId !== 'string') {
       throw new Error('todoId must be a string');
     }
-    return withTaskService().tasksStart(todoId);
+    return withTaskService().tasksGetPlanningContext(todoId);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksPlanMessage, (_event, todoId: unknown, instruction: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    if (typeof instruction !== 'string') {
+      throw new Error('instruction must be a string');
+    }
+    return withTaskService().tasksPlanMessage(todoId, instruction);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksStart, (_event, todoId: unknown, options: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    if (options !== null && options !== undefined && (typeof options !== 'object' || Array.isArray(options))) {
+      throw new Error('options must be an object');
+    }
+    return withTaskService().tasksStart(todoId, (options as TaskStartOptions | null) ?? undefined);
   });
   ipcMain.handle(IPC_CHANNELS.tasksGetThread, (_event, todoId: unknown, cursor: unknown, limit: unknown) => {
     if (typeof todoId !== 'string') {

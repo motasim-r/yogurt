@@ -893,6 +893,273 @@ describe('GranolaTaskService', () => {
     await service.dispose();
   });
 
+  it('generates and stores planning options without starting execution', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Plan task',
+              description: 'Need planning options',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-plan', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: ReturnType<typeof vi.fn> };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-plan',
+        summary: '',
+        finalText: JSON.stringify({
+          options: [
+            {
+              id: 'o1',
+              title: 'Fast path',
+              summary: 'Ship quick result',
+              steps: ['Clarify output', 'Collect evidence', 'Respond'],
+              why: 'Fastest path',
+              recommended: true,
+            },
+            {
+              id: 'o2',
+              title: 'Deep path',
+              summary: 'Validate key assumptions',
+              steps: ['List assumptions', 'Validate claims', 'Draft findings'],
+              why: 'Higher confidence',
+              recommended: false,
+            },
+            {
+              id: 'o3',
+              title: 'Context-first',
+              summary: 'Use meeting details first',
+              steps: ['Extract constraints', 'Resolve ambiguities', 'Draft plan'],
+              why: 'Better context fit',
+              recommended: false,
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const planned = await service.tasksPlanMessage(String(todoId), 'Focus on speed.');
+    expect(planned.ok).toBe(true);
+    expect(planned.plan?.options.length).toBeGreaterThanOrEqual(2);
+    expect(planned.plan?.options.length).toBeLessThanOrEqual(3);
+    expect(planned.plan?.options.filter((option) => option.recommended)).toHaveLength(1);
+
+    const thread = await service.tasksGetThread(String(todoId), null, 80);
+    const planningDraft = thread.messages.find((message) => message.messageType === 'planning_draft');
+    expect(planningDraft).toBeTruthy();
+    expect(planningDraft?.planDraft?.recommendedOptionId).toBeTruthy();
+
+    const feed = service.getFeed();
+    expect(feed.activeRunTodoId).toBeNull();
+    expect(feed.queuedRunCount).toBe(0);
+    expect(feed.todos[0]?.attempts ?? 0).toBe(0);
+
+    await service.dispose();
+  });
+
+  it('falls back to template planning options when planner output is invalid', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Fallback plan task',
+              description: 'Need fallback',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'medium',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-plan-fallback', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: ReturnType<typeof vi.fn> };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-plan-bad',
+        summary: 'This is not valid JSON output',
+        finalText: 'I would do this and that.',
+      }),
+    }));
+
+    const planned = await service.tasksPlanMessage(String(todoId), '');
+    expect(planned.ok).toBe(true);
+    expect(planned.plan?.options.length).toBeGreaterThanOrEqual(2);
+    expect(planned.plan?.options.length).toBeLessThanOrEqual(3);
+    expect(planned.plan?.options.filter((option) => option.recommended)).toHaveLength(1);
+
+    await service.dispose();
+  });
+
+  it('injects approved plan into start prompt', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Start with plan',
+              description: 'Verify approved plan prompt injection',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-start-plan', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: ReturnType<typeof vi.fn> };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-plan',
+        summary: '',
+        finalText: JSON.stringify({
+          options: [
+            {
+              id: 'rec',
+              title: 'Recommended path',
+              summary: 'Do the recommended thing',
+              steps: ['First', 'Second', 'Third'],
+              why: 'Best fit',
+              recommended: true,
+            },
+            {
+              id: 'alt',
+              title: 'Alternate path',
+              summary: 'Do the alternate thing',
+              steps: ['A', 'B', 'C'],
+              why: 'Alternative',
+              recommended: false,
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const planned = await service.tasksPlanMessage(String(todoId), 'Prioritize speed');
+    expect(planned.ok).toBe(true);
+    const recommendedId = planned.plan?.recommendedOptionId;
+    expect(recommendedId).toBeTruthy();
+
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-exec',
+        summary: 'done',
+        finalText: 'Execution completed.',
+      }),
+    }));
+
+    const started = await service.tasksStart(String(todoId), {
+      approvedPlan: {
+        draftId: planned.plan?.draftId,
+        selection: {
+          mode: 'preset',
+          optionId: String(recommendedId),
+        },
+      },
+    });
+    expect(started.ok).toBe(true);
+    await waitUntil(() => internals.ironclaw.startRun.mock.calls.length > 0);
+
+    const startCall = internals.ironclaw.startRun.mock.calls[0]?.[0] as { prompt?: string } | undefined;
+    expect(startCall?.prompt ?? '').toContain('Approved plan selection:');
+    expect(startCall?.prompt ?? '').toContain('Recommended path');
+
+    await service.dispose();
+  });
+
   it('merges snapshot and delta chunks without duplicate assistant output', async () => {
     const dataDir = await makeTempDir();
     const service = new GranolaTaskService({

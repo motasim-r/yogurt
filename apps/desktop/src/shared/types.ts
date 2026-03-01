@@ -61,6 +61,7 @@ export type TaskExecutionPhase =
   | 'cancelled';
 export type TaskChatRole = 'user' | 'assistant' | 'system' | 'status';
 export type TaskChatTraceKind = 'thought' | 'tool_start' | 'tool_result' | 'source_fetch' | 'phase';
+export type TaskChatMessageType = 'default' | 'planning_context' | 'planning_user' | 'planning_draft' | 'planning_approved';
 
 export interface TaskChatTrace {
   kind: TaskChatTraceKind;
@@ -80,6 +81,49 @@ export interface TaskStep {
   step: string;
   createdAt: string;
   message: string;
+}
+
+export interface TaskPlanOption {
+  id: string;
+  title: string;
+  summary: string;
+  steps: string[];
+  why: string;
+  recommended: boolean;
+}
+
+export interface TaskPlanDraft {
+  draftId: string;
+  todoId: string;
+  generatedAt: string;
+  options: TaskPlanOption[];
+  recommendedOptionId: string;
+  guidanceUsed: string;
+}
+
+export interface TaskPlanningContextSection {
+  id: 'granola' | 'planner' | 'ironclaw';
+  title: string;
+  bullets: string[];
+}
+
+export interface TaskPlanningContext {
+  todoId: string;
+  generatedAt: string;
+  sections: TaskPlanningContextSection[];
+}
+
+export interface TaskPlanSelection {
+  mode: 'preset' | 'custom';
+  optionId?: string;
+  customInstruction?: string;
+}
+
+export interface TaskStartOptions {
+  approvedPlan?: {
+    draftId?: string;
+    selection: TaskPlanSelection;
+  };
 }
 
 export interface TaskItemPublic {
@@ -113,6 +157,8 @@ export interface TaskChatMessage {
   streaming: boolean;
   statusTag: TaskExecutionPhase | null;
   trace?: TaskChatTrace | null;
+  messageType?: TaskChatMessageType;
+  planDraft?: TaskPlanDraft | null;
 }
 
 export interface TaskChatThreadPage {
@@ -288,7 +334,9 @@ export interface GranolaAPI {
   tasksConnect(): Promise<{ ok: boolean; needsBrowser: boolean; message?: string }>;
   tasksOpenPendingAuthorization(): Promise<{ ok: boolean; message?: string }>;
   tasksSyncNow(): Promise<{ ok: boolean; meetingCount: number; fetchedAt: string; warning?: string }>;
-  tasksStart(todoId: string): Promise<{ ok: boolean; runId?: string; message?: string }>;
+  tasksGetPlanningContext(todoId: string): Promise<TaskPlanningContext>;
+  tasksPlanMessage(todoId: string, instruction: string): Promise<{ ok: boolean; plan?: TaskPlanDraft; message?: string }>;
+  tasksStart(todoId: string, options?: TaskStartOptions): Promise<{ ok: boolean; runId?: string; message?: string }>;
   tasksGetThread(todoId: string, cursor?: string | null, limit?: number): Promise<TaskChatThreadPage>;
   tasksSendMessage(todoId: string, text: string): Promise<{ ok: boolean; queued: boolean; runId?: string; message?: string }>;
   tasksCancelActiveRun(todoId: string): Promise<{ ok: boolean; message?: string }>;

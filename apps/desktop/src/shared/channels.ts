@@ -10,6 +10,8 @@ export const IPC_CHANNELS = {
   tasksConnect: 'tasks:connect',
   tasksOpenPendingAuth: 'tasks:open-pending-auth',
   tasksSyncNow: 'tasks:sync-now',
+  tasksGetPlanningContext: 'tasks:get-planning-context',
+  tasksPlanMessage: 'tasks:plan-message',
   tasksStart: 'tasks:start',
   tasksGetThread: 'tasks:get-thread',
   tasksSendMessage: 'tasks:send-message',

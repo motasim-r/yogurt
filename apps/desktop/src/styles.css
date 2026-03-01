@@ -1424,6 +1424,177 @@ svg {
   }
 }
 
+.task-planning-panel {
+  margin: 0;
+  border-radius: 12px;
+  border: 0.5px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.task-planning-panel__header h3 {
+  margin: 0;
+  color: #ecece9;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.task-planning-panel__header p {
+  margin: 4px 0 0;
+  color: var(--color-text-subtle);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.task-planning-context {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.task-planning-context__card {
+  border-radius: 10px;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.14);
+  padding: 8px 9px;
+}
+
+.task-planning-context__card h4 {
+  margin: 0 0 6px;
+  color: #ecece9;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.task-planning-context__card ul {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--color-text-subtle);
+  font-size: 11px;
+  line-height: 16px;
+  display: grid;
+  gap: 3px;
+}
+
+.task-planning-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.task-planning-controls textarea {
+  border-radius: 10px;
+  border: 0.5px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  color: #ecece9;
+  min-height: 56px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 18px;
+  resize: vertical;
+}
+
+.task-plan-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.task-plan-option {
+  width: 100%;
+  text-align: left;
+  border-radius: 10px;
+  border: 0.5px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: #ecece9;
+  padding: 9px 10px;
+  cursor: pointer;
+  display: grid;
+  gap: 7px;
+}
+
+.task-plan-option.is-selected {
+  border-color: rgba(120, 140, 21, 0.45);
+  background: rgba(76, 92, 30, 0.22);
+}
+
+.task-plan-option.is-recommended {
+  box-shadow: inset 0 0 0 0.5px rgba(184, 216, 122, 0.35);
+}
+
+.task-plan-option__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-plan-option p {
+  margin: 0;
+  color: #e3e3dc;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.task-plan-option small {
+  color: var(--color-text-subtle);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.task-plan-option ul {
+  margin: 0;
+  padding-left: 16px;
+  color: #d9d9d2;
+  font-size: 11px;
+  line-height: 16px;
+  display: grid;
+  gap: 2px;
+}
+
+.task-plan-option__badge {
+  border-radius: 999px;
+  border: 0.5px solid rgba(184, 216, 122, 0.45);
+  background: rgba(120, 140, 21, 0.24);
+  color: #dce9a8;
+  padding: 0 7px;
+  font-size: 10px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.task-plan-option.is-custom {
+  grid-column: 1 / -1;
+  cursor: default;
+}
+
+.task-plan-option__select {
+  justify-self: start;
+  border-radius: 999px;
+  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #ecece9;
+  padding: 0 9px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.task-plan-option.is-custom textarea {
+  border-radius: 8px;
+  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.03);
+  color: #ecece9;
+  min-height: 60px;
+  font-size: 12px;
+  line-height: 16px;
+  padding: 8px;
+  resize: vertical;
+}
+
 .copilot-chat-messages {
   flex: 1;
   min-height: 0;
@@ -1852,6 +2023,18 @@ svg {
   }
 
   .copilot-runtime-drawer__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-planning-context {
+    grid-template-columns: 1fr;
+  }
+
+  .task-planning-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .task-plan-options {
     grid-template-columns: 1fr;
   }
 

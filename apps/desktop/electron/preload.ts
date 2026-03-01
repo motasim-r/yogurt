@@ -21,7 +21,9 @@ const api: GranolaAPI = {
   tasksConnect: () => ipcRenderer.invoke(IPC_CHANNELS.tasksConnect),
   tasksOpenPendingAuthorization: () => ipcRenderer.invoke(IPC_CHANNELS.tasksOpenPendingAuth),
   tasksSyncNow: () => ipcRenderer.invoke(IPC_CHANNELS.tasksSyncNow),
-  tasksStart: (todoId: string) => ipcRenderer.invoke(IPC_CHANNELS.tasksStart, todoId),
+  tasksGetPlanningContext: (todoId: string) => ipcRenderer.invoke(IPC_CHANNELS.tasksGetPlanningContext, todoId),
+  tasksPlanMessage: (todoId: string, instruction: string) => ipcRenderer.invoke(IPC_CHANNELS.tasksPlanMessage, todoId, instruction),
+  tasksStart: (todoId: string, options) => ipcRenderer.invoke(IPC_CHANNELS.tasksStart, todoId, options ?? null),
   tasksGetThread: (todoId: string, cursor?: string | null, limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.tasksGetThread, todoId, cursor ?? null, typeof limit === 'number' ? limit : null),
   tasksSendMessage: (todoId: string, text: string) => ipcRenderer.invoke(IPC_CHANNELS.tasksSendMessage, todoId, text),

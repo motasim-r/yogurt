@@ -39,12 +39,17 @@ import type {
 import type {
   GranolaAuthStatus,
   TaskChatMessage,
+  TaskChatMessageType,
   TaskChatTrace,
   TaskChatThreadPage,
   TaskExecutionPhase,
   TaskExecutorConnection,
   TaskCounts,
   TaskItemPublic,
+  TaskPlanDraft,
+  TaskPlanOption,
+  TaskPlanningContext,
+  TaskStartOptions,
   TasksFeed,
   TasksRealtimeEvent,
   TasksRuntimeCheck,
@@ -345,6 +350,14 @@ function parseIsoDate(value: string | null): number | null {
   }
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatDateIso(value: string | null): string {
+  const parsed = parseIsoDate(value);
+  if (parsed === null) {
+    return value || 'Unknown';
+  }
+  return new Date(parsed).toLocaleString();
 }
 
 function normalizeTodoStatus(
@@ -655,6 +668,223 @@ function compactMultilineText(value: string | null | undefined, maxLength = 2200
   return clampText(normalized, maxLength);
 }
 
+function compactSingleLineText(value: unknown, maxLength = 220): string {
+  const normalized = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) {
+    return '';
+  }
+  return clampText(normalized, maxLength);
+}
+
+function parseJsonObjectStrict(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonObjectFromFence(text: string): Record<string, unknown> | null {
+  const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (!match) {
+    return null;
+  }
+  return parseJsonObjectStrict(match[1] ?? '');
+}
+
+function extractFirstJsonObject(text: string): Record<string, unknown> | null {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  return parseJsonObjectStrict(text.slice(start, end + 1));
+}
+
+function normalizePlanSteps(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => compactSingleLineText(item, 240))
+      .filter(Boolean)
+      .slice(0, 6);
+  }
+  if (typeof value !== 'string') {
+    return [];
+  }
+  return value
+    .split(/\n+/)
+    .map((line) => line.replace(/^[\s\-*0-9.)]+/, ''))
+    .map((line) => compactSingleLineText(line, 240))
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function normalizePlanOptionCandidate(candidate: unknown, fallbackIndex: number): TaskPlanOption | null {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return null;
+  }
+  const row = candidate as Record<string, unknown>;
+  const id = compactSingleLineText(row.id, 60) || `option-${fallbackIndex + 1}`;
+  const title = compactSingleLineText(row.title ?? row.name ?? row.option, 120);
+  const summary = compactSingleLineText(row.summary ?? row.description ?? row.outcome, 240);
+  const why = compactSingleLineText(row.why ?? row.reason ?? row.rationale, 240);
+  const steps = normalizePlanSteps(row.steps ?? row.actions ?? row.todo ?? row.plan);
+  if (!title || !summary || !why || steps.length === 0) {
+    return null;
+  }
+  return {
+    id,
+    title,
+    summary,
+    steps,
+    why,
+    recommended: row.recommended === true,
+  };
+}
+
+function fallbackPlanOptions(todo: TodoRecord, meeting: GranolaMeeting | null): TaskPlanOption[] {
+  const hasRichMeetingContext = Boolean(
+    (meeting?.enhancedNotes && meeting.enhancedNotes.trim()) ||
+      (meeting?.notes && meeting.notes.trim()) ||
+      (meeting?.transcript && meeting.transcript.trim()),
+  );
+  const meetingFocus = compactSingleLineText(meeting?.title ?? todo.meetingTitle ?? 'meeting context', 80);
+  const taskFocus = compactSingleLineText(todo.title, 80) || 'the task';
+
+  const options: TaskPlanOption[] = [
+    {
+      id: 'option-1',
+      title: 'Fast path execution',
+      summary: 'Get to a concrete first answer quickly, then refine only where needed.',
+      steps: [
+        `Clarify the core outcome for ${taskFocus}`,
+        `Pull high-signal evidence from ${meetingFocus}`,
+        'Return concise findings and immediate next actions',
+      ],
+      why: 'Best default when speed and momentum matter.',
+      recommended: true,
+    },
+    {
+      id: 'option-2',
+      title: 'Evidence-first validation',
+      summary: 'Prioritize source quality and reduce risk before making recommendations.',
+      steps: ['List key claims to verify', 'Cross-check claims with stronger sources', 'Present decisions with confidence levels'],
+      why: 'Best when decisions are high impact or need stronger confidence.',
+      recommended: false,
+    },
+  ];
+
+  if (hasRichMeetingContext) {
+    options.push({
+      id: 'option-3',
+      title: 'Meeting-context deep dive',
+      summary: 'Use meeting details and transcript context to shape a tailored plan.',
+      steps: ['Extract explicit constraints from notes', 'Resolve ambiguities from transcript context', 'Build a focused execution checklist'],
+      why: 'Best when the meeting context contains nuanced requirements.',
+      recommended: false,
+    });
+  }
+
+  return options;
+}
+
+function normalizePlanOptions(
+  parsedOptions: TaskPlanOption[],
+  fallbackOptions: TaskPlanOption[],
+  targetCount: number,
+): { options: TaskPlanOption[]; recommendedOptionId: string } {
+  const candidates = [...parsedOptions, ...fallbackOptions];
+  const options: TaskPlanOption[] = [];
+  const usedIds = new Set<string>();
+  const usedTitles = new Set<string>();
+  let preferredRecommendedId: string | null = null;
+
+  for (const candidate of candidates) {
+    if (options.length >= targetCount) {
+      break;
+    }
+    const titleKey = candidate.title.trim().toLowerCase();
+    if (!titleKey || usedTitles.has(titleKey)) {
+      continue;
+    }
+    let nextId = compactSingleLineText(candidate.id, 64) || `option-${options.length + 1}`;
+    if (usedIds.has(nextId)) {
+      let suffix = 2;
+      while (usedIds.has(`${nextId}-${suffix}`)) {
+        suffix += 1;
+      }
+      nextId = `${nextId}-${suffix}`;
+    }
+    usedIds.add(nextId);
+    usedTitles.add(titleKey);
+    if (!preferredRecommendedId && candidate.recommended) {
+      preferredRecommendedId = nextId;
+    }
+    options.push({
+      ...candidate,
+      id: nextId,
+      recommended: false,
+    });
+  }
+
+  while (options.length < 2 && fallbackOptions.length > 0) {
+    const template = fallbackOptions[options.length % fallbackOptions.length] as TaskPlanOption;
+    let nextId = `${template.id}-fallback-${options.length + 1}`;
+    while (usedIds.has(nextId)) {
+      nextId = `${nextId}-x`;
+    }
+    usedIds.add(nextId);
+    options.push({
+      ...template,
+      id: nextId,
+      recommended: false,
+    });
+  }
+
+  if (options.length === 0) {
+    const emergency = fallbackOptions[0] as TaskPlanOption;
+    options.push({
+      ...emergency,
+      id: 'option-1',
+      recommended: false,
+    });
+  }
+
+  const recommendedOptionId = preferredRecommendedId && options.some((option) => option.id === preferredRecommendedId)
+    ? preferredRecommendedId
+    : (options[0]?.id ?? 'option-1');
+
+  return {
+    options: options.map((option) => ({
+      ...option,
+      recommended: option.id === recommendedOptionId,
+    })),
+    recommendedOptionId,
+  };
+}
+
+function planningDraftMarkdown(draft: TaskPlanDraft): string {
+  const lines: string[] = [];
+  lines.push('## Planning options');
+  for (const [index, option] of draft.options.entries()) {
+    lines.push('');
+    lines.push(`### ${index + 1}. ${option.title}${option.recommended ? ' (Recommended)' : ''}`);
+    lines.push(option.summary);
+    lines.push(`Why: ${option.why}`);
+    for (const step of option.steps) {
+      lines.push(`- ${step}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 function formatMeetingContext(meeting: GranolaMeeting | null): string {
   if (!meeting) {
     return 'No cached meeting context was found for this task.';
@@ -720,6 +950,47 @@ function buildExecutionPrompt(todo: TodoRecord, meeting: GranolaMeeting | null):
     '3) Suggested next steps',
     '',
     'Keep the response concise and action-oriented.',
+  ].join('\n');
+}
+
+function buildPlanningPrompt(
+  todo: TodoRecord,
+  meeting: GranolaMeeting | null,
+  guidance: string,
+): string {
+  const evidence = compactMultilineText(todo.evidence, 1200);
+  const objective = [
+    `Task title: ${todo.title}`,
+    `Task description: ${todo.description || 'No description provided.'}`,
+    `Owner: ${todo.owner || 'Unassigned'}`,
+    `Due date: ${todo.dueDate || 'Not specified'}`,
+    `Priority: ${todo.priority}`,
+    evidence ? `Evidence from extraction:\n${evidence}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return [
+    'You are planning task execution for Yogurt.',
+    'Return strict JSON only. No markdown, no prose outside JSON.',
+    '',
+    'Requirements:',
+    '- Return 2 or 3 options only.',
+    '- Exactly one option must be recommended=true.',
+    '- Each option must include concise steps.',
+    '- Keep options practical and action-oriented.',
+    '',
+    'JSON schema:',
+    '{"options":[{"id":"string","title":"string","summary":"string","steps":["string"],"why":"string","recommended":true|false}]}',
+    '',
+    'Task context:',
+    objective,
+    '',
+    'Meeting context:',
+    formatMeetingContext(meeting),
+    '',
+    'User guidance:',
+    guidance,
   ].join('\n');
 }
 
@@ -1540,6 +1811,8 @@ export class GranolaTaskService {
       trace?: TaskChatTrace | null;
       messageId?: string;
       emitRealtime?: boolean;
+      messageType?: TaskChatMessageType;
+      planDraft?: TaskPlanDraft | null;
     },
   ): TaskChatMessage {
     const createdAt = options?.createdAt ?? nowIso();
@@ -1553,6 +1826,8 @@ export class GranolaTaskService {
       streaming: options?.streaming === true,
       statusTag: options?.statusTag ?? null,
       trace: options?.trace ?? null,
+      messageType: options?.messageType ?? 'default',
+      planDraft: options?.planDraft ?? null,
     };
     const thread = this.ensureThread(todoId);
     thread.push(message);
@@ -3041,7 +3316,7 @@ export class GranolaTaskService {
   private threadHistoryForPrompt(todoId: string, maxMessages = 10): string {
     const thread = this.chatState.threads[todoId] ?? [];
     const filtered = thread
-      .filter((item) => item.role === 'user' || item.role === 'assistant')
+      .filter((item) => (item.role === 'user' || item.role === 'assistant') && item.messageType !== 'planning_draft')
       .slice(-maxMessages)
       .map((item) => `[${item.role}] ${item.content.trim()}`);
     return filtered.join('\n');
@@ -3052,6 +3327,7 @@ export class GranolaTaskService {
     meeting: GranolaMeeting | null,
     todoId: string,
     latestUserInstruction: string,
+    approvedPlanSummary?: string | null,
   ): string {
     const base = buildExecutionPrompt(todo, meeting);
     const history = this.threadHistoryForPrompt(todoId);
@@ -3061,11 +3337,156 @@ export class GranolaTaskService {
       'Conversation history:',
       history || '[No prior conversation]',
       '',
+      approvedPlanSummary ? 'Approved plan selection:' : null,
+      approvedPlanSummary ? approvedPlanSummary : null,
+      approvedPlanSummary ? '' : null,
       'Latest user instruction:',
       latestUserInstruction,
       '',
       'Respond in concise progress updates while working, then deliver final findings.',
+    ]
+      .filter((line): line is string => typeof line === 'string')
+      .join('\n');
+  }
+
+  private latestPlanningDraft(todoId: string): TaskPlanDraft | null {
+    const thread = this.chatState.threads[todoId] ?? [];
+    for (let index = thread.length - 1; index >= 0; index -= 1) {
+      const message = thread[index];
+      if (message?.planDraft) {
+        return message.planDraft;
+      }
+    }
+    return null;
+  }
+
+  private approvedPlanSummary(todoId: string, options?: TaskStartOptions): { summary: string; userLine: string } | null {
+    const approved = options?.approvedPlan;
+    if (!approved?.selection) {
+      return null;
+    }
+    const latestDraft = this.latestPlanningDraft(todoId);
+    if (approved.selection.mode === 'custom') {
+      const customInstruction = compactSingleLineText(approved.selection.customInstruction ?? '', 1200);
+      if (!customInstruction) {
+        return null;
+      }
+      return {
+        summary: `Mode: custom\nInstruction: ${customInstruction}`,
+        userLine: `Follow this custom planning instruction while executing: ${customInstruction}`,
+      };
+    }
+
+    const optionId = compactSingleLineText(approved.selection.optionId ?? '', 120);
+    if (!optionId || !latestDraft) {
+      return null;
+    }
+    const option = latestDraft.options.find((item) => item.id === optionId);
+    if (!option) {
+      return null;
+    }
+    const steps = option.steps.slice(0, 6).map((step) => `- ${step}`).join('\n');
+    const summary = [
+      `Mode: preset (${option.title})`,
+      `Summary: ${option.summary}`,
+      `Why: ${option.why}`,
+      'Steps:',
+      steps,
     ].join('\n');
+    return {
+      summary,
+      userLine: `Follow the approved preset plan: ${option.title}. ${option.summary}`,
+    };
+  }
+
+  private async generatePlanDraft(
+    todo: TodoRecord,
+    meeting: GranolaMeeting | null,
+    guidance: string,
+  ): Promise<{ draft: TaskPlanDraft; usedFallback: boolean; note?: string }> {
+    const hasRichContext = Boolean(
+      (todo.description && todo.description.trim()) ||
+        (todo.evidence && todo.evidence.trim()) ||
+        (meeting?.notes && meeting.notes.trim()) ||
+        (meeting?.enhancedNotes && meeting.enhancedNotes.trim()) ||
+        (meeting?.transcript && meeting.transcript.trim()),
+    );
+    const targetOptionCount = hasRichContext ? 3 : 2;
+    const fallback = fallbackPlanOptions(todo, meeting);
+    const guidanceUsed = compactSingleLineText(guidance, 1200) || 'Generate the best execution plan.';
+    const baseDraft = (): TaskPlanDraft => {
+      const normalized = normalizePlanOptions([], fallback, targetOptionCount);
+      return {
+        draftId: randomUUID(),
+        todoId: todo.todoId,
+        generatedAt: nowIso(),
+        options: normalized.options,
+        recommendedOptionId: normalized.recommendedOptionId,
+        guidanceUsed,
+      };
+    };
+
+    const executor = await this.refreshExecutorState();
+    if (executor.state !== 'connected') {
+      return {
+        draft: baseDraft(),
+        usedFallback: true,
+        note: executor.lastError || 'IronClaw planner unavailable; generated fallback options.',
+      };
+    }
+
+    const planningPrompt = buildPlanningPrompt(todo, meeting, guidanceUsed);
+    const runHandle = this.ironclaw.startRun({
+      prompt: planningPrompt,
+      agentId: this.ironclawAgentId,
+      sessionKey: `${this.buildExecutionSessionKey(todo.todoId, randomUUID())}:planning`,
+      lane: this.executionLane(),
+      thinking: 'minimal',
+      onEvent: () => {
+        // Planning generation is synchronous from the renderer's perspective.
+      },
+    });
+
+    try {
+      const result = await withTimeout(
+        runHandle.done,
+        this.liveRequestTimeoutMs * 2,
+        'Planning generation timed out. Falling back to template options.',
+      );
+      const responseText = String(result.finalText || result.summary || '').trim();
+      const parsed =
+        parseJsonObjectStrict(responseText) ??
+        extractJsonObjectFromFence(responseText) ??
+        extractFirstJsonObject(responseText);
+      const candidatesRaw = Array.isArray(parsed?.options)
+        ? parsed.options
+        : Array.isArray(parsed?.plans)
+          ? parsed.plans
+          : [];
+      const parsedOptions = candidatesRaw
+        .map((item, index) => normalizePlanOptionCandidate(item, index))
+        .filter((item): item is TaskPlanOption => item !== null);
+      const normalized = normalizePlanOptions(parsedOptions, fallback, targetOptionCount);
+      const usedFallback = parsedOptions.length < 2;
+      return {
+        draft: {
+          draftId: randomUUID(),
+          todoId: todo.todoId,
+          generatedAt: nowIso(),
+          options: normalized.options,
+          recommendedOptionId: normalized.recommendedOptionId,
+          guidanceUsed,
+        },
+        usedFallback,
+        note: usedFallback ? 'Planner response was incomplete. Added fallback options.' : undefined,
+      };
+    } catch (error) {
+      return {
+        draft: baseDraft(),
+        usedFallback: true,
+        note: safeErrorMessage(error),
+      };
+    }
   }
 
   private async queueExecutionRequest(
@@ -3808,6 +4229,119 @@ export class GranolaTaskService {
     };
   }
 
+  async tasksGetPlanningContext(todoId: string): Promise<TaskPlanningContext> {
+    const todo = this.findTodo(todoId);
+    if (!todo) {
+      throw new Error('Task not found.');
+    }
+    const meeting = this.cacheState.meetings.find((item) => item.id === todo.meetingId) ?? null;
+    const executor = await this.refreshExecutorState();
+    if (!this.ironclawVersion) {
+      this.ironclawVersion = await this.ironclaw.getVersion();
+    }
+    const auth = this.authSnapshot();
+    const latestDraft = this.latestPlanningDraft(todoId);
+
+    const granolaBullets = [
+      `Task: ${compactSingleLineText(todo.title, 140) || 'Untitled task'}`,
+      `Description: ${compactSingleLineText(todo.description || 'No description provided.', 180)}`,
+      `Meeting: ${compactSingleLineText(meeting?.title || todo.meetingTitle || 'Unknown meeting', 140)}`,
+      `Owner: ${compactSingleLineText(todo.owner || 'Unassigned', 80)}`,
+      `Due date: ${compactSingleLineText(todo.dueDate || 'Not specified', 80)}`,
+    ];
+    if (meeting?.attendees?.length) {
+      granolaBullets.push(`Attendees: ${meeting.attendees.slice(0, 6).join(', ')}`);
+    }
+
+    const plannerBullets = [
+      'AI planner proposes 2-3 options and marks exactly one as recommended.',
+      latestDraft
+        ? `Latest draft generated at ${formatDateIso(latestDraft.generatedAt)}.`
+        : 'No draft yet. Generate options to begin.',
+      latestDraft ? `Last guidance: ${compactSingleLineText(latestDraft.guidanceUsed, 200)}` : 'Guidance defaults to concise action planning.',
+    ];
+
+    const ironclawBullets = [
+      `Executor state: ${executor.state}`,
+      `Profile: ${this.ironclawProfile}`,
+      `Version: ${this.ironclawVersion || 'unknown'}`,
+      `Gateway: ${executor.gatewayUrl || 'Unavailable'}`,
+      `Account: ${auth.tokenIdentity || 'Not available'}`,
+      `Last sync: ${this.lastSyncAt ? formatDateIso(this.lastSyncAt) : 'Never'}`,
+    ];
+    if (executor.lastError) {
+      ironclawBullets.push(`Runtime note: ${compactSingleLineText(executor.lastError, 200)}`);
+    }
+
+    return {
+      todoId,
+      generatedAt: nowIso(),
+      sections: [
+        {
+          id: 'granola',
+          title: 'Granola context',
+          bullets: granolaBullets,
+        },
+        {
+          id: 'planner',
+          title: 'OpenAI/IronClaw planner',
+          bullets: plannerBullets,
+        },
+        {
+          id: 'ironclaw',
+          title: 'IronClaw runtime',
+          bullets: ironclawBullets,
+        },
+      ],
+    };
+  }
+
+  async tasksPlanMessage(todoId: string, instruction: string): Promise<{ ok: boolean; plan?: TaskPlanDraft; message?: string }> {
+    const todo = this.findTodo(todoId);
+    if (!todo) {
+      return {
+        ok: false,
+        message: 'Task not found.',
+      };
+    }
+
+    const trimmed = instruction.trim();
+    const guidance = trimmed || 'Generate 2-3 concise execution plans for this task.';
+    const meeting = this.cacheState.meetings.find((item) => item.id === todo.meetingId) ?? null;
+
+    await this.withChatStateWrite(async () => {
+      this.appendThreadMessage(todoId, 'user', guidance, {
+        runId: todo.runId,
+        messageType: 'planning_user',
+      });
+    });
+
+    let generated: { draft: TaskPlanDraft; usedFallback: boolean; note?: string };
+    try {
+      generated = await this.generatePlanDraft(todo, meeting, guidance);
+    } catch (error) {
+      return {
+        ok: false,
+        message: safeErrorMessage(error),
+      };
+    }
+
+    await this.withChatStateWrite(async () => {
+      this.appendThreadMessage(todoId, 'assistant', planningDraftMarkdown(generated.draft), {
+        runId: todo.runId,
+        messageType: 'planning_draft',
+        planDraft: generated.draft,
+      });
+    });
+    this.emitFeedUpdated();
+
+    return {
+      ok: true,
+      plan: generated.draft,
+      message: generated.note,
+    };
+  }
+
   async tasksSendMessage(todoId: string, text: string): Promise<{ ok: boolean; queued: boolean; runId?: string; message?: string }> {
     const trimmed = text.trim();
     if (!trimmed) {
@@ -3880,7 +4414,7 @@ export class GranolaTaskService {
     };
   }
 
-  async tasksStart(todoId: string): Promise<{ ok: boolean; runId?: string; message?: string }> {
+  async tasksStart(todoId: string, options?: TaskStartOptions): Promise<{ ok: boolean; runId?: string; message?: string }> {
     const todo = this.findTodo(todoId);
     if (!todo) {
       return {
@@ -3890,10 +4424,19 @@ export class GranolaTaskService {
     }
 
     const meeting = this.cacheState.meetings.find((item) => item.id === todo.meetingId) ?? null;
-    const userInstruction = `Start this task and stream progress updates in Yogurt chat: ${todo.title}`;
-    const prompt = this.buildExecutionPromptForRequest(todo, meeting, todoId, userInstruction);
+    const approvedPlan = this.approvedPlanSummary(todoId, options);
+    const userInstruction = approvedPlan
+      ? `${approvedPlan.userLine}\n\nStart this task and stream progress updates in Yogurt chat: ${todo.title}`
+      : `Start this task and stream progress updates in Yogurt chat: ${todo.title}`;
+    const prompt = this.buildExecutionPromptForRequest(todo, meeting, todoId, userInstruction, approvedPlan?.summary ?? null);
 
     await this.withChatStateWrite(async () => {
+      if (approvedPlan) {
+        this.appendThreadMessage(todoId, 'system', `Approved plan captured for execution.\n\n${approvedPlan.summary}`, {
+          runId: todo.runId,
+          messageType: 'planning_approved',
+        });
+      }
       this.appendThreadMessage(todoId, 'user', userInstruction, {
         runId: todo.runId,
       });

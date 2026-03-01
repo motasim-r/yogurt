@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { TaskChatMessage, TaskChatTrace } from '../../src/shared/types.js';
+import type { TaskChatMessage, TaskChatTrace, TaskPlanDraft, TaskPlanOption } from '../../src/shared/types.js';
 
 export interface TaskChatStoreDocument {
   version: 1;
@@ -34,6 +34,87 @@ function defaultDocument(): TaskChatStoreDocument {
 
 function normalizeOptionalString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
+}
+
+function normalizePlanOption(raw: unknown, index: number): TaskPlanOption | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `option-${index + 1}`;
+  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+  const summary = typeof raw.summary === 'string' ? raw.summary.trim() : '';
+  const why = typeof raw.why === 'string' ? raw.why.trim() : '';
+  const steps = Array.isArray(raw.steps)
+    ? raw.steps
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+  if (!title || !summary || !why || steps.length === 0) {
+    return null;
+  }
+  return {
+    id,
+    title,
+    summary,
+    steps,
+    why,
+    recommended: raw.recommended === true,
+  };
+}
+
+function normalizePlanDraft(raw: unknown): TaskPlanDraft | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const draftId = typeof raw.draftId === 'string' ? raw.draftId.trim() : '';
+  const todoId = typeof raw.todoId === 'string' ? raw.todoId.trim() : '';
+  const generatedAt = typeof raw.generatedAt === 'string' ? raw.generatedAt.trim() : '';
+  const guidanceUsed = typeof raw.guidanceUsed === 'string' ? raw.guidanceUsed.trim() : '';
+  const optionsRaw = Array.isArray(raw.options) ? raw.options : [];
+  const options = optionsRaw
+    .map((item, index) => normalizePlanOption(item, index))
+    .filter((item): item is TaskPlanOption => item !== null)
+    .slice(0, 3);
+  if (!draftId || !todoId || !generatedAt || !guidanceUsed || options.length === 0) {
+    return null;
+  }
+
+  const recommendedRaw = typeof raw.recommendedOptionId === 'string' ? raw.recommendedOptionId.trim() : '';
+  const recommendedOptionId = options.some((option) => option.id === recommendedRaw) ? recommendedRaw : options[0]?.id ?? '';
+  if (!recommendedOptionId) {
+    return null;
+  }
+
+  let assignedRecommended = false;
+  const normalizedOptions = options.map((option) => {
+    if (option.id !== recommendedOptionId) {
+      return {
+        ...option,
+        recommended: false,
+      };
+    }
+    if (assignedRecommended) {
+      return {
+        ...option,
+        recommended: false,
+      };
+    }
+    assignedRecommended = true;
+    return {
+      ...option,
+      recommended: true,
+    };
+  });
+
+  return {
+    draftId,
+    todoId,
+    generatedAt,
+    options: normalizedOptions,
+    recommendedOptionId,
+    guidanceUsed,
+  };
 }
 
 function normalizeTrace(raw: unknown): TaskChatTrace | null {
@@ -98,6 +179,16 @@ function normalizeMessage(raw: unknown): TaskChatMessage | null {
   const streaming = raw.streaming === true;
   const statusTag = typeof raw.statusTag === 'string' ? raw.statusTag : null;
   const trace = normalizeTrace(raw.trace);
+  const messageTypeRaw = typeof raw.messageType === 'string' ? raw.messageType : null;
+  const messageType =
+    messageTypeRaw === 'default' ||
+    messageTypeRaw === 'planning_context' ||
+    messageTypeRaw === 'planning_user' ||
+    messageTypeRaw === 'planning_draft' ||
+    messageTypeRaw === 'planning_approved'
+      ? messageTypeRaw
+      : undefined;
+  const planDraft = normalizePlanDraft(raw.planDraft);
 
   if (!messageId || !todoId || !createdAt) {
     return null;
@@ -127,6 +218,8 @@ function normalizeMessage(raw: unknown): TaskChatMessage | null {
         ? statusTag
         : null,
     trace,
+    messageType,
+    planDraft,
   };
 }
 

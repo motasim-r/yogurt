@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TaskChatMessage, TasksFeed, TasksRealtimeEvent } from './shared/types';
+import type { TaskChatMessage, TaskPlanDraft, TaskPlanningContext, TasksFeed, TasksRealtimeEvent } from './shared/types';
 
 const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
 
@@ -9,6 +9,7 @@ const {
   state,
   makeFeed,
   makeThread,
+  makePlanningContext,
   granolaClientMock,
 } = vi.hoisted(() => {
   const makeFeed = (): TasksFeed => ({
@@ -138,6 +139,62 @@ const {
     },
   ];
 
+  const makePlanDraft = (todoId: string, guidanceUsed: string): TaskPlanDraft => ({
+    draftId: `draft-${todoId}-${Date.now()}`,
+    todoId,
+    generatedAt: new Date().toISOString(),
+    options: [
+      {
+        id: 'option-1',
+        title: 'Fast path execution',
+        summary: 'Run a focused pass to generate quick, actionable output.',
+        steps: ['Clarify output', 'Collect key evidence', 'Draft concise recommendations'],
+        why: 'Best default for speed and momentum.',
+        recommended: true,
+      },
+      {
+        id: 'option-2',
+        title: 'Evidence-first validation',
+        summary: 'Validate high-impact claims before proposing actions.',
+        steps: ['List core claims', 'Verify against sources', 'Call out confidence levels'],
+        why: 'Best when risk tolerance is low.',
+        recommended: false,
+      },
+      {
+        id: 'option-3',
+        title: 'Context deep-dive',
+        summary: 'Use richer meeting context to tailor a nuanced plan.',
+        steps: ['Extract constraints', 'Resolve unknowns', 'Create phased execution checklist'],
+        why: 'Best when details are ambiguous.',
+        recommended: false,
+      },
+    ],
+    recommendedOptionId: 'option-1',
+    guidanceUsed,
+  });
+
+  const makePlanningContext = (todoId: string): TaskPlanningContext => ({
+    todoId,
+    generatedAt: new Date().toISOString(),
+    sections: [
+      {
+        id: 'granola',
+        title: 'Granola context',
+        bullets: ['Task + meeting details are available.'],
+      },
+      {
+        id: 'planner',
+        title: 'OpenAI/IronClaw planner',
+        bullets: ['Planner can generate 2-3 options with one recommended.'],
+      },
+      {
+        id: 'ironclaw',
+        title: 'IronClaw runtime',
+        bullets: ['Runtime is connected.'],
+      },
+    ],
+  });
+
   const state = {
     feed: makeFeed(),
     threads: new Map<string, TaskChatMessage[]>([
@@ -145,6 +202,11 @@ const {
       ['todo-2', makeThread('todo-2')],
     ]),
     subscriber: null as ((event: TasksRealtimeEvent) => void) | null,
+    planningContexts: new Map<string, TaskPlanningContext>([
+      ['todo-1', makePlanningContext('todo-1')],
+      ['todo-2', makePlanningContext('todo-2')],
+    ]),
+    latestPlans: new Map<string, TaskPlanDraft>(),
   };
 
   const granolaClientMock = {
@@ -174,6 +236,39 @@ const {
     tasksOpenPendingAuthorization: vi.fn(async () => ({ ok: true })),
     tasksSyncNow: vi.fn(async () => ({ ok: true, meetingCount: 0, fetchedAt: new Date().toISOString() })),
     tasksStart: vi.fn(async () => ({ ok: true })),
+    tasksGetPlanningContext: vi.fn(async (todoId: string) => state.planningContexts.get(todoId) ?? makePlanningContext(todoId)),
+    tasksPlanMessage: vi.fn(async (todoId: string, instruction: string) => {
+      const guidance = instruction.trim() || 'Generate a concise task plan.';
+      const plan = makePlanDraft(todoId, guidance);
+      state.latestPlans.set(todoId, plan);
+      const next = [...(state.threads.get(todoId) ?? [])];
+      next.push({
+        messageId: `plan-user-${next.length + 1}`,
+        todoId,
+        runId: null,
+        role: 'user',
+        content: guidance,
+        createdAt: new Date().toISOString(),
+        streaming: false,
+        statusTag: null,
+        messageType: 'planning_user',
+        planDraft: null,
+      });
+      next.push({
+        messageId: `plan-draft-${next.length + 1}`,
+        todoId,
+        runId: null,
+        role: 'assistant',
+        content: 'Planning options generated.',
+        createdAt: new Date().toISOString(),
+        streaming: false,
+        statusTag: null,
+        messageType: 'planning_draft',
+        planDraft: plan,
+      });
+      state.threads.set(todoId, next);
+      return { ok: true, plan };
+    }),
     tasksGetThread: vi.fn(async (todoId: string) => ({
       todoId,
       messages: JSON.parse(JSON.stringify(state.threads.get(todoId) ?? [])),
@@ -248,6 +343,7 @@ const {
     state,
     makeFeed,
     makeThread,
+    makePlanningContext,
     granolaClientMock,
   };
 });
@@ -272,6 +368,11 @@ describe('App task copilot', () => {
       ['todo-2', makeThread('todo-2')],
     ]);
     state.subscriber = null;
+    state.planningContexts = new Map<string, TaskPlanningContext>([
+      ['todo-1', makePlanningContext('todo-1')],
+      ['todo-2', makePlanningContext('todo-2')],
+    ]);
+    state.latestPlans = new Map<string, TaskPlanDraft>();
     vi.clearAllMocks();
   });
 
@@ -310,6 +411,101 @@ describe('App task copilot', () => {
 
     await waitFor(() => {
       expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith('todo-1', 'Continue with competitor research');
+    });
+  });
+
+  it('shows planning module for an empty task thread and renders custom option last', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', []);
+    render(<App />);
+
+    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+    expect(await screen.findByText(/Plan before launch/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Plan task/i }));
+    await waitFor(() => {
+      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
+    });
+
+    expect(await screen.findByText(/^Recommended$/i, { selector: 'span' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Custom$/i })).toBeInTheDocument();
+    const optionCards = document.querySelectorAll('.task-plan-option');
+    expect(optionCards).toHaveLength(4);
+    expect(optionCards[3]?.className).toContain('is-custom');
+  });
+
+  it('uses planning API (not execution send) from composer while pre-start planning is active', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', []);
+    render(<App />);
+
+    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+    const composer = await screen.findByPlaceholderText(/Tell planner how this task should be planned/i);
+    await user.type(composer, 'Prioritize speed and include links');
+    await user.click(screen.getByRole('button', { name: /^Plan$/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalledWith('todo-1', 'Prioritize speed and include links');
+    });
+    expect(granolaClientMock.tasksSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('starts with selected recommended preset plan payload', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', []);
+    render(<App />);
+
+    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+    await user.click(await screen.findByRole('button', { name: /Plan task/i }));
+    await waitFor(() => {
+      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
+    });
+
+    await user.click(screen.getByRole('button', { name: /^Start Task$/i }));
+    await waitFor(() => {
+      expect(granolaClientMock.tasksStart).toHaveBeenCalledWith(
+        'todo-1',
+        expect.objectContaining({
+          approvedPlan: expect.objectContaining({
+            selection: expect.objectContaining({
+              mode: 'preset',
+              optionId: 'option-1',
+            }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it('starts with custom planning instruction payload', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', []);
+    render(<App />);
+
+    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+    await user.click(await screen.findByRole('button', { name: /Plan task/i }));
+    await waitFor(() => {
+      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
+    });
+
+    await user.click(screen.getByRole('button', { name: /^Custom$/i }));
+    const customField = screen.getByPlaceholderText(/Type extra planning instructions/i);
+    await user.clear(customField);
+    await user.type(customField, 'Focus on enterprise CRM players first.');
+    await user.click(screen.getByRole('button', { name: /^Start Task$/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksStart).toHaveBeenCalledWith(
+        'todo-1',
+        expect.objectContaining({
+          approvedPlan: expect.objectContaining({
+            selection: expect.objectContaining({
+              mode: 'custom',
+              customInstruction: 'Focus on enterprise CRM players first.',
+            }),
+          }),
+        }),
+      );
     });
   });
 

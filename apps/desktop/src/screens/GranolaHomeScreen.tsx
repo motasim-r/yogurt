@@ -18,7 +18,16 @@ import {
   TrashIcon,
 } from '../design-system/icons';
 import { granolaClient } from '../lib/granolaClient';
-import type { TaskChatMessage, TaskChatTrace, TaskItemPublic, TasksFeed, TasksRealtimeEvent } from '../shared/types';
+import type {
+  TaskChatMessage,
+  TaskChatTrace,
+  TaskItemPublic,
+  TaskPlanDraft,
+  TaskPlanningContext,
+  TaskStartOptions,
+  TasksFeed,
+  TasksRealtimeEvent,
+} from '../shared/types';
 import { MarkdownMessage } from '../components/MarkdownMessage';
 
 type MainTab = 'home' | 'tasks';
@@ -400,7 +409,7 @@ function ChatBubble({ message }: { message: TaskChatMessage }) {
   const roleLabel =
     message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : message.role === 'status' ? 'Status' : 'System';
 
-  if (message.role === 'assistant' && !message.streaming) {
+  if (message.role === 'assistant' && !message.streaming && message.messageType !== 'planning_draft') {
     return (
       <article className="run-final-answer">
         <header>
@@ -426,6 +435,135 @@ function ChatBubble({ message }: { message: TaskChatMessage }) {
         )}
       </div>
     </article>
+  );
+}
+
+function latestPlanDraftFromMessages(messages: TaskChatMessage[]): TaskPlanDraft | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.planDraft) {
+      return message.planDraft;
+    }
+  }
+  return null;
+}
+
+function TaskPlanningPanel({
+  context,
+  contextLoading,
+  draft,
+  isPlanning,
+  planningInput,
+  onPlanningInputChange,
+  onGenerate,
+  selectedMode,
+  selectedOptionId,
+  onSelectOption,
+  customInstruction,
+  onCustomInstructionChange,
+}: {
+  context: TaskPlanningContext | null;
+  contextLoading: boolean;
+  draft: TaskPlanDraft | null;
+  isPlanning: boolean;
+  planningInput: string;
+  onPlanningInputChange: (value: string) => void;
+  onGenerate: () => void;
+  selectedMode: 'preset' | 'custom' | null;
+  selectedOptionId: string | null;
+  onSelectOption: (mode: 'preset' | 'custom', optionId?: string) => void;
+  customInstruction: string;
+  onCustomInstructionChange: (value: string) => void;
+}) {
+  return (
+    <section className="task-planning-panel" aria-label="Task planning panel">
+      <header className="task-planning-panel__header">
+        <h3>Plan before launch</h3>
+        <p>Choose one AI plan, or use Custom, then start execution.</p>
+      </header>
+
+      <div className="task-planning-context">
+        {contextLoading ? <p className="copilot-empty">Loading planning context...</p> : null}
+        {!contextLoading && !context ? <p className="copilot-empty">Planning context unavailable.</p> : null}
+        {context?.sections.map((section) => (
+          <article key={section.id} className="task-planning-context__card">
+            <h4>{section.title}</h4>
+            <ul>
+              {section.bullets.map((bullet, index) => (
+                <li key={`${section.id}-${index}`}>{bullet}</li>
+              ))}
+            </ul>
+          </article>
+        ))}
+      </div>
+
+      <div className="task-planning-controls">
+        <textarea
+          value={planningInput}
+          onChange={(event) => {
+            onPlanningInputChange(event.target.value);
+          }}
+          placeholder="Anything specific about how this should be planned?"
+          disabled={isPlanning}
+        />
+        <button type="button" className="copilot-secondary-button" onClick={onGenerate} disabled={isPlanning}>
+          {isPlanning ? 'Planning...' : draft ? 'Regenerate options' : 'Plan task'}
+        </button>
+      </div>
+
+      <div className="task-plan-options">
+        {draft?.options.map((option, index) => {
+          const selected = selectedMode === 'preset' && selectedOptionId === option.id;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              className={cx('task-plan-option', selected && 'is-selected', option.recommended && 'is-recommended')}
+              onClick={() => {
+                onSelectOption('preset', option.id);
+              }}
+            >
+              <div className="task-plan-option__title-row">
+                <strong>
+                  {index + 1}. {option.title}
+                </strong>
+                {option.recommended ? <span className="task-plan-option__badge">Recommended</span> : null}
+              </div>
+              <p>{option.summary}</p>
+              <small>{option.why}</small>
+              <ul>
+                {option.steps.map((step, stepIndex) => (
+                  <li key={`${option.id}-step-${stepIndex}`}>{step}</li>
+                ))}
+              </ul>
+            </button>
+          );
+        })}
+
+        <div className={cx('task-plan-option', 'is-custom', selectedMode === 'custom' && 'is-selected')}>
+          <button
+            type="button"
+            className="task-plan-option__select"
+            onClick={() => {
+              onSelectOption('custom');
+            }}
+          >
+            Custom
+          </button>
+          <p>Anything else on how we should plan this?</p>
+          <textarea
+            value={customInstruction}
+            onFocus={() => {
+              onSelectOption('custom');
+            }}
+            onChange={(event) => {
+              onCustomInstructionChange(event.target.value);
+            }}
+            placeholder="Type extra planning instructions..."
+          />
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -536,6 +674,14 @@ export default function GranolaHomeScreen() {
   const [composerText, setComposerText] = useState('');
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
+  const [planningContext, setPlanningContext] = useState<TaskPlanningContext | null>(null);
+  const [planningContextLoading, setPlanningContextLoading] = useState(false);
+  const [planningDraft, setPlanningDraft] = useState<TaskPlanDraft | null>(null);
+  const [planningInput, setPlanningInput] = useState('');
+  const [isPlanning, setIsPlanning] = useState(false);
+  const [selectedPlanMode, setSelectedPlanMode] = useState<'preset' | 'custom' | null>(null);
+  const [selectedPlanOptionId, setSelectedPlanOptionId] = useState<string | null>(null);
+  const [customPlanInstruction, setCustomPlanInstruction] = useState('');
   const [expandedTraceRows, setExpandedTraceRows] = useState<Set<string>>(() => new Set());
   const [dismissedWarningKeys, setDismissedWarningKeys] = useState<Set<string>>(() => new Set(readDismissedWarningKeys()));
 
@@ -548,8 +694,54 @@ export default function GranolaHomeScreen() {
   const activeRunTodoId = tasksFeed?.activeRunTodoId ?? null;
   const selectedRunActive = Boolean(selectedTodoId && activeRunTodoId === selectedTodoId);
   const chatRenderBlocks = useMemo(() => buildChatRenderBlocks(threadMessages), [threadMessages]);
+  const latestPlanDraft = useMemo(() => latestPlanDraftFromMessages(threadMessages), [threadMessages]);
+  const hasNonPlanningThreadMessages = useMemo(
+    () => threadMessages.some((message) => (message.messageType ?? 'default') === 'default'),
+    [threadMessages],
+  );
+  const isTaskPreStart = Boolean(
+    selectedTask &&
+      selectedTask.attempts === 0 &&
+      !selectedTask.runId &&
+      selectedTask.runState === 'idle' &&
+      selectedTask.runQueueState === 'idle' &&
+      !hasNonPlanningThreadMessages,
+  );
+  const plannerSelectionValid = Boolean(
+    !isTaskPreStart ||
+      (selectedPlanMode === 'preset' && selectedPlanOptionId) ||
+      (selectedPlanMode === 'custom' && customPlanInstruction.trim().length > 0),
+  );
   const showWorkingIndicator =
     selectedRunActive || threadMessages.some((message) => message.role === 'assistant' && message.streaming);
+  const selectedStartOptions = useMemo<TaskStartOptions | undefined>(() => {
+    if (!isTaskPreStart) {
+      return undefined;
+    }
+    if (selectedPlanMode === 'preset' && selectedPlanOptionId) {
+      return {
+        approvedPlan: {
+          draftId: planningDraft?.draftId,
+          selection: {
+            mode: 'preset',
+            optionId: selectedPlanOptionId,
+          },
+        },
+      };
+    }
+    if (selectedPlanMode === 'custom' && customPlanInstruction.trim()) {
+      return {
+        approvedPlan: {
+          draftId: planningDraft?.draftId,
+          selection: {
+            mode: 'custom',
+            customInstruction: customPlanInstruction.trim(),
+          },
+        },
+      };
+    }
+    return undefined;
+  }, [customPlanInstruction, isTaskPreStart, planningDraft?.draftId, selectedPlanMode, selectedPlanOptionId]);
   const activeWarningKey = useMemo(
     () => (tasksFeed?.warning ? createWarningKey(tasksFeed.warning, tasksFeed.warningDetails) : null),
     [tasksFeed?.warning, tasksFeed?.warningDetails],
@@ -661,15 +853,37 @@ export default function GranolaHomeScreen() {
     [],
   );
 
+  const fetchPlanningContext = useCallback(async (todoId: string): Promise<void> => {
+    if (!todoId) {
+      return;
+    }
+    setPlanningContextLoading(true);
+    try {
+      const context = await granolaClient.tasksGetPlanningContext(todoId);
+      setPlanningContext(context);
+      setTasksError(null);
+    } catch (error) {
+      setTasksError(error instanceof Error ? error.message : 'Unable to load planning context.');
+      setPlanningContext(null);
+    } finally {
+      setPlanningContextLoading(false);
+    }
+  }, []);
+
   const openTaskChat = useCallback(
     async (todoId: string) => {
       setSelectedTodoId(todoId);
       setTasksViewMode('chat');
       setLiveStatus(null);
+      setPlanningInput('');
+      setCustomPlanInstruction('');
+      setSelectedPlanMode(null);
+      setSelectedPlanOptionId(null);
       await fetchThread(todoId, null, false);
+      await fetchPlanningContext(todoId);
       scrollMessagesToBottom(false);
     },
-    [fetchThread, scrollMessagesToBottom],
+    [fetchPlanningContext, fetchThread, scrollMessagesToBottom],
   );
 
   const scheduleFeedRefresh = useCallback(() => {
@@ -691,7 +905,35 @@ export default function GranolaHomeScreen() {
       return;
     }
     void fetchThread(selectedTodoId, null, false);
-  }, [fetchThread, selectedTodoId, tasksViewMode]);
+    void fetchPlanningContext(selectedTodoId);
+  }, [fetchPlanningContext, fetchThread, selectedTodoId, tasksViewMode]);
+
+  useEffect(() => {
+    if (latestPlanDraft) {
+      setPlanningDraft(latestPlanDraft);
+      return;
+    }
+    setPlanningDraft(null);
+  }, [latestPlanDraft]);
+
+  useEffect(() => {
+    if (!planningDraft) {
+      return;
+    }
+    if (selectedPlanMode === 'custom') {
+      return;
+    }
+    const hasSelectedOption = Boolean(
+      selectedPlanMode === 'preset' &&
+        selectedPlanOptionId &&
+        planningDraft.options.some((option) => option.id === selectedPlanOptionId),
+    );
+    if (hasSelectedOption) {
+      return;
+    }
+    setSelectedPlanMode('preset');
+    setSelectedPlanOptionId(planningDraft.recommendedOptionId);
+  }, [planningDraft, selectedPlanMode, selectedPlanOptionId]);
 
   useEffect(() => {
     const unsubscribe = granolaClient.tasksSubscribe((event) => {
@@ -810,7 +1052,7 @@ export default function GranolaHomeScreen() {
   }, [fetchTasksFeed, isConnecting, isSyncing, tasksFeed]);
 
   const handleStartTodo = useCallback(
-    async (todoId: string) => {
+    async (todoId: string, options?: TaskStartOptions) => {
       if (startingTodoId) {
         return;
       }
@@ -819,7 +1061,7 @@ export default function GranolaHomeScreen() {
       setStartingTodoId(todoId);
       setLiveStatus('Starting task execution...');
       try {
-        const result = await granolaClient.tasksStart(todoId);
+        const result = options ? await granolaClient.tasksStart(todoId, options) : await granolaClient.tasksStart(todoId);
         if (!result.ok && result.message) {
           setTasksError(result.message);
         } else {
@@ -836,6 +1078,33 @@ export default function GranolaHomeScreen() {
     [fetchTasksFeed, fetchThread, startingTodoId],
   );
 
+  const handleGeneratePlan = useCallback(async () => {
+    if (!selectedTodoId || isPlanning) {
+      return;
+    }
+    const instruction = planningInput.trim() || 'Generate 2-3 concise plan options with one recommended option.';
+    setIsPlanning(true);
+    try {
+      const result = await granolaClient.tasksPlanMessage(selectedTodoId, instruction);
+      if (!result.ok && result.message) {
+        setTasksError(result.message);
+      } else {
+        setTasksError(null);
+      }
+      if (result.plan) {
+        setPlanningDraft(result.plan);
+        setSelectedPlanMode('preset');
+        setSelectedPlanOptionId(result.plan.recommendedOptionId);
+      }
+      setPlanningInput('');
+    } catch (error) {
+      setTasksError(error instanceof Error ? error.message : 'Unable to generate a plan.');
+    } finally {
+      setIsPlanning(false);
+      await fetchTasksFeed();
+    }
+  }, [fetchTasksFeed, isPlanning, planningInput, selectedTodoId]);
+
   const handleSendMessage = useCallback(async () => {
     if (!selectedTodoId || isSendingMessage) {
       return;
@@ -847,6 +1116,20 @@ export default function GranolaHomeScreen() {
     setIsSendingMessage(true);
     setComposerText('');
     try {
+      if (isTaskPreStart) {
+        const result = await granolaClient.tasksPlanMessage(selectedTodoId, trimmed);
+        if (!result.ok && result.message) {
+          setTasksError(result.message);
+        } else {
+          setTasksError(null);
+        }
+        if (result.plan) {
+          setPlanningDraft(result.plan);
+          setSelectedPlanMode('preset');
+          setSelectedPlanOptionId(result.plan.recommendedOptionId);
+        }
+        return;
+      }
       const result = await granolaClient.tasksSendMessage(selectedTodoId, trimmed);
       if (!result.ok && result.message) {
         setTasksError(result.message);
@@ -859,7 +1142,7 @@ export default function GranolaHomeScreen() {
       setIsSendingMessage(false);
       await fetchTasksFeed();
     }
-  }, [composerText, fetchTasksFeed, isSendingMessage, selectedTodoId]);
+  }, [composerText, fetchTasksFeed, isSendingMessage, isTaskPreStart, selectedTodoId]);
 
   const handleCancelRun = useCallback(async () => {
     if (!selectedTodoId) {
@@ -1135,10 +1418,10 @@ export default function GranolaHomeScreen() {
                     className="copilot-primary-button"
                     onClick={() => {
                       if (selectedTodoId) {
-                        void handleStartTodo(selectedTodoId);
+                        void handleStartTodo(selectedTodoId, selectedStartOptions);
                       }
                     }}
-                    disabled={!selectedTodoId || Boolean(startingTodoId)}
+                    disabled={!selectedTodoId || Boolean(startingTodoId) || !plannerSelectionValid}
                   >
                     {startingTodoId && selectedTodoId === startingTodoId ? 'Starting...' : 'Start Task'}
                   </button>
@@ -1212,6 +1495,32 @@ export default function GranolaHomeScreen() {
               ) : null}
 
               <div ref={messagesViewportRef} className="copilot-chat-messages">
+                {isTaskPreStart ? (
+                  <TaskPlanningPanel
+                    context={planningContext}
+                    contextLoading={planningContextLoading}
+                    draft={planningDraft}
+                    isPlanning={isPlanning}
+                    planningInput={planningInput}
+                    onPlanningInputChange={setPlanningInput}
+                    onGenerate={() => {
+                      void handleGeneratePlan();
+                    }}
+                    selectedMode={selectedPlanMode}
+                    selectedOptionId={selectedPlanOptionId}
+                    onSelectOption={(mode, optionId) => {
+                      setSelectedPlanMode(mode);
+                      if (mode === 'preset') {
+                        setSelectedPlanOptionId(optionId ?? null);
+                        return;
+                      }
+                      setSelectedPlanOptionId(null);
+                    }}
+                    customInstruction={customPlanInstruction}
+                    onCustomInstructionChange={setCustomPlanInstruction}
+                  />
+                ) : null}
+
                 {threadHasMore ? (
                   <button
                     type="button"
@@ -1228,7 +1537,7 @@ export default function GranolaHomeScreen() {
                 ) : null}
 
                 {threadLoading ? <p className="copilot-empty">Loading chat...</p> : null}
-                {!threadLoading && threadMessages.length === 0 ? (
+                {!threadLoading && threadMessages.length === 0 && !isTaskPreStart ? (
                   <p className="copilot-empty">No messages yet. Click Start Task or send a message to begin.</p>
                 ) : null}
                 {chatRenderBlocks.map((block) => {
@@ -1256,7 +1565,7 @@ export default function GranolaHomeScreen() {
                   onChange={(event) => {
                     setComposerText(event.target.value);
                   }}
-                  placeholder="Message task copilot..."
+                  placeholder={isTaskPreStart ? 'Tell planner how this task should be planned...' : 'Message task copilot...'}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault();
@@ -1273,7 +1582,7 @@ export default function GranolaHomeScreen() {
                   }}
                   disabled={!selectedTodoId || isSendingMessage || composerText.trim().length === 0}
                 >
-                  {isSendingMessage ? 'Sending...' : 'Send'}
+                  {isSendingMessage ? (isTaskPreStart ? 'Planning...' : 'Sending...') : isTaskPreStart ? 'Plan' : 'Send'}
                 </button>
               </div>
             </section>

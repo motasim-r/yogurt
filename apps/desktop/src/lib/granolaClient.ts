@@ -181,7 +181,64 @@ const browserFallback: GranolaAPI = {
       warning: 'Granola task service is only available in Electron runtime.',
     };
   },
-  async tasksStart() {
+  async tasksGetPlanningContext(todoId: string) {
+    const now = new Date().toISOString();
+    return {
+      todoId,
+      generatedAt: now,
+      sections: [
+        {
+          id: 'granola' as const,
+          title: 'Granola context',
+          bullets: ['Task context is only available in Electron runtime.'],
+        },
+        {
+          id: 'planner' as const,
+          title: 'Planner context',
+          bullets: ['AI planning is only available in Electron runtime.'],
+        },
+        {
+          id: 'ironclaw' as const,
+          title: 'IronClaw runtime',
+          bullets: ['Runtime status is only available in Electron runtime.'],
+        },
+      ],
+    };
+  },
+  async tasksPlanMessage(todoId: string, instruction: string) {
+    const now = new Date().toISOString();
+    const guidanceUsed = instruction.trim() || 'Generate the best task plan.';
+    return {
+      ok: true,
+      plan: {
+        draftId: `draft-${todoId}`,
+        todoId,
+        generatedAt: now,
+        options: [
+          {
+            id: 'option-1',
+            title: 'Fast research pass',
+            summary: 'Collect top findings quickly, then refine.',
+            steps: ['Scan primary sources', 'Capture key findings', 'Flag gaps for follow-up'],
+            why: 'Best for speed when context is limited.',
+            recommended: true,
+          },
+          {
+            id: 'option-2',
+            title: 'Deep evidence-first pass',
+            summary: 'Validate each claim with stronger references.',
+            steps: ['Map claims to sources', 'Verify assumptions', 'Draft structured output'],
+            why: 'Best when quality and defensibility matter most.',
+            recommended: false,
+          },
+        ],
+        recommendedOptionId: 'option-1',
+        guidanceUsed,
+      },
+      message: 'Generated fallback planning options in browser runtime.',
+    };
+  },
+  async tasksStart(_todoId: string, _options) {
     return {
       ok: false,
       message: 'Task execution is only available in Electron runtime.',
