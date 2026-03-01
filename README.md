@@ -33,6 +33,20 @@ Reference docs:
 - [`docs/operations.md`](docs/operations.md)
 - [`docs/architecture.md`](docs/architecture.md)
 
+## Screenshots
+
+### Tasks list
+
+![Yogurt tasks list](docs/images/app-tasks-list.png)
+
+### Task chat (final output)
+
+![Yogurt task chat CSV workflow](docs/images/app-task-chat-csv.png)
+
+### Task chat (completed run)
+
+![Yogurt task chat email workflow](docs/images/app-task-chat-email.png)
+
 Yogurt is a desktop-first task copilot that unifies:
 
 1. Granola MCP ingestion (meetings, notes, transcripts)
