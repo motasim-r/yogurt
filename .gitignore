@@ -21,3 +21,4 @@ npm-debug.log*
 
 # Temporary and generated snapshots
 test-results/
+apps/desktop/artifacts/

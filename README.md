@@ -47,11 +47,35 @@ Reference docs:
 
 ![Yogurt task chat email workflow](docs/images/app-task-chat-email.png)
 
-Yogurt is a desktop-first task copilot that unifies:
+Yogurt is a pilot-ready internal desktop copilot that unifies:
 
 1. Granola MCP ingestion (meetings, notes, transcripts)
 2. Structured task extraction and local persistence
 3. IronClaw execution with in-app streaming chat UX
+
+## Current Capability Snapshot
+
+What works now:
+
+- Granola OAuth + sync into an in-app tasks feed
+- Task extraction with deduplication and persisted local state
+- Plan-before-run workflow (recommended option + custom planning input)
+- IronClaw execution queueing with realtime chat/timeline traces
+- Runtime checks and reconnect actions for operator recovery
+
+Current constraints:
+
+- External dependency on Granola MCP and IronClaw health
+- Sensitivity to local callback/gateway port conflicts
+- Desktop/Electron runtime is the primary supported path
+
+Detailed team-facing positioning: [`docs/capability-positioning.md`](docs/capability-positioning.md)
+
+## Near-Term Roadmap (90 days)
+
+- **Now (0-30 days):** reliability hardening (OAuth callback/gateway stability, clearer sync diagnostics, deterministic trace quality)
+- **Next (31-60 days):** operator confidence (recovery UX, stronger task quality guardrails, setup/healthcheck ergonomics)
+- **Later (61-90 days):** team adoption (higher-quality deliverables, richer run observability, broader internal rollout polish)
 
 ## Monorepo Layout
 
@@ -106,6 +130,14 @@ Key variables:
 - `npm run test`
 - `npm run typecheck`
 - `npm run doctor`
+
+## Runtime Debugging via CDP
+
+For Electron runtime/UI debugging with agent-browser:
+
+- Start CDP-enabled desktop app: `npm run -w @yogurt/desktop dev:cdp`
+- Capture baseline runtime context: `npm run -w @yogurt/desktop cdp:capture -- --label ui-task`
+- See the full runbook: `docs/electron-cdp-debugging.md`
 
 ## Legacy
 
