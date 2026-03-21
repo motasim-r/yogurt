@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -39,6 +39,53 @@ function meeting(id: string, notes: string): GranolaMeeting {
   };
 }
 
+function meetingAt(
+  id: string,
+  title: string,
+  date: string,
+  overrides: Partial<GranolaMeeting> = {},
+): GranolaMeeting {
+  return {
+    id,
+    title,
+    date,
+    attendees: [],
+    notes: null,
+    enhancedNotes: null,
+    privateNotes: null,
+    transcript: null,
+    raw: null,
+    ...overrides,
+  };
+}
+
+function formatExpectedGroupLabel(date: Date): string {
+  const now = new Date();
+  const options: Intl.DateTimeFormatOptions =
+    date.getFullYear() === now.getFullYear()
+      ? { weekday: 'short', month: 'short', day: 'numeric' }
+      : { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
+  return date.toLocaleDateString('en-US', options);
+}
+
+function setCachedMeetings(service: GranolaTaskService, meetings: GranolaMeeting[], fetchedAt = '2026-03-21T12:00:00.000Z'): void {
+  const internals = service as unknown as {
+    cacheState: {
+      meetings: GranolaMeeting[];
+      warnings: string[];
+      warningDetails: string[];
+      fetchedAt: string | null;
+    };
+    lastSyncAt: string | null;
+  };
+
+  internals.cacheState.meetings = meetings;
+  internals.cacheState.warnings = ['Home warning'];
+  internals.cacheState.warningDetails = ['Detail one'];
+  internals.cacheState.fetchedAt = fetchedAt;
+  internals.lastSyncAt = fetchedAt;
+}
+
 function setFreshPendingAuth(service: GranolaTaskService, url = 'https://example.com/oauth'): void {
   const state = (service as unknown as { authState: Record<string, unknown> }).authState;
   const now = Date.now();
@@ -57,6 +104,117 @@ function textResult(payload: unknown): { content: Array<{ type: 'text'; text: st
       },
     ],
   };
+}
+
+function plainTextResult(
+  text: string,
+  structuredContent?: unknown,
+): { content: Array<{ type: 'text'; text: string }>; structuredContent?: unknown } {
+  return structuredContent === undefined
+    ? {
+        content: [
+          {
+            type: 'text',
+            text,
+          },
+        ],
+      }
+    : {
+        content: [
+          {
+            type: 'text',
+            text,
+          },
+        ],
+        structuredContent,
+      };
+}
+
+async function writeGranolaDesktopCache(
+  filePath: string,
+  overrides: Record<string, unknown> = {},
+): Promise<void> {
+  const payload = {
+    cache: {
+      state: {
+        publicRecipes: [
+          {
+            id: 'recipe-list-recent-todos',
+            slug: 'list-recent-todos',
+            config: {
+              description: 'List todos',
+              instructions: 'List my recent todos across meetings.',
+              allowed_views: ['global'],
+            },
+            creator_info: { name: 'Granola' },
+          },
+          {
+            id: 'recipe-coach-me-matt',
+            slug: 'coach-me-Matt',
+            config: {
+              description: 'Coach me',
+              instructions: 'Coach me using recent meetings.',
+              allowed_views: ['global'],
+            },
+            creator_info: { name: 'Matt Mochary' },
+          },
+          {
+            id: 'recipe-weekly-recap',
+            slug: 'write-weekly-recap',
+            config: {
+              description: 'Weekly recap',
+              instructions: 'Write my weekly recap based on meetings.',
+              allowed_views: ['global'],
+            },
+            creator_info: { name: 'Granola' },
+          },
+          {
+            id: 'recipe-streamline-calendar',
+            slug: 'Streamline-my-calendar',
+            config: {
+              description: 'Streamline calendar',
+              instructions: 'Streamline my calendar using upcoming meetings.',
+              allowed_views: ['global'],
+            },
+            creator_info: { name: 'Peter Yang' },
+          },
+          {
+            id: 'recipe-blind-spots',
+            slug: 'blind-spots',
+            config: {
+              description: 'Blind spots',
+              instructions: 'Find blind spots in my recent meetings.',
+              allowed_views: ['global'],
+            },
+            creator_info: { name: 'Tom' },
+          },
+        ],
+        userRecipes: [
+          {
+            id: 'recipe-custom-followup',
+            slug: 'custom-follow-up',
+            config: {
+              description: 'Custom follow-up',
+              instructions: 'Write a follow-up email.',
+              allowed_views: ['global'],
+            },
+            creator_info: { name: 'Me' },
+          },
+        ],
+        sharedRecipes: [],
+        recipesUsage: {
+          'recipe-list-recent-todos': { last_used_at: '2026-03-21T11:00:00.000Z' },
+          'recipe-coach-me-matt': { last_used_at: '2026-03-21T10:00:00.000Z' },
+        },
+        multiChatState: {
+          selectedModel: 'auto',
+        },
+        ...overrides,
+      },
+    },
+  };
+
+  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }
 
 function deferred<T>() {
@@ -235,10 +393,16 @@ describe('GranolaTaskService', () => {
     });
 
     await service.init();
+    const internals = service as unknown as {
+      ensureCallbackServerStarted: () => Promise<string>;
+    };
+    internals.ensureCallbackServerStarted = vi.fn(async () => 'http://127.0.0.1:43110/oauth/callback');
+
     const result = await service.openPendingAuthorization();
 
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/No pending authorization URL/i);
+    expect(internals.ensureCallbackServerStarted).not.toHaveBeenCalled();
 
     await service.dispose();
   });
@@ -271,6 +435,368 @@ describe('GranolaTaskService', () => {
     expect(result.needsBrowser).toBe(true);
     expect(openExternal).toHaveBeenCalledWith('https://example.com/oauth');
     expect(startSpy).not.toHaveBeenCalled();
+
+    await service.dispose();
+  });
+
+  it('derives the home feed from cached meetings and groups notes by date label', async () => {
+    const dataDir = await makeTempDir();
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 11, 49);
+    const previousDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2, 16, 27);
+
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    setCachedMeetings(service, [
+      meetingAt('today-1', 'Newest meeting', today.toISOString(), { notes: 'Today notes' }),
+      meetingAt('older-1', 'Older meeting', previousDay.toISOString(), { notes: 'Older notes' }),
+    ]);
+
+    const feed = service.homeGetFeed();
+
+    expect(feed.lastSyncAt).toBe('2026-03-21T12:00:00.000Z');
+    expect(feed.warning).toBe('Home warning');
+    expect(feed.warningDetails).toEqual(['Detail one']);
+    expect(feed.recentNotes).toHaveLength(2);
+    expect(feed.recentNotes[0]).toMatchObject({
+      id: 'today-1',
+      title: 'Newest meeting',
+      ownerLabel: 'Me',
+      groupLabel: 'Today',
+      timeLabel: today.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase(),
+    });
+    expect(feed.recentNotes[1]).toMatchObject({
+      id: 'older-1',
+      groupLabel: formatExpectedGroupLabel(previousDay),
+      timeLabel: previousDay.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase(),
+    });
+
+    await service.dispose();
+  });
+
+  it('selects the earliest future meeting for the home upcoming card', async () => {
+    const dataDir = await makeTempDir();
+    const now = new Date();
+    const firstFuture = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    firstFuture.setHours(9, 0, 0, 0);
+    const laterFuture = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    laterFuture.setHours(11, 30, 0, 0);
+
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    setCachedMeetings(service, [
+      meetingAt('future-late', 'Later future', laterFuture.toISOString()),
+      meetingAt('future-early', 'Earlier future', firstFuture.toISOString()),
+      meetingAt('past', 'Past meeting', new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()),
+    ]);
+
+    const feed = service.homeGetFeed();
+
+    expect(feed.upcomingMeeting).toMatchObject({
+      id: 'future-early',
+      title: 'Earlier future',
+      dayLabel: firstFuture.toLocaleDateString('en-US', { day: 'numeric' }),
+      monthLabel: firstFuture.toLocaleDateString('en-US', { month: 'long' }),
+      weekdayLabel: firstFuture.toLocaleDateString('en-US', { weekday: 'short' }),
+      timeLabel: firstFuture.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    });
+
+    await service.dispose();
+  });
+
+  it('uses enhanced, notes, private notes, then transcript for home note detail body', async () => {
+    const dataDir = await makeTempDir();
+
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    setCachedMeetings(service, [
+      meetingAt('enhanced', 'Enhanced note', '2026-03-01T09:00:00.000Z', {
+        enhancedNotes: 'Enhanced body',
+        notes: 'Regular body',
+        privateNotes: 'Private body',
+        transcript: 'Transcript body',
+      }),
+      meetingAt('notes', 'Notes fallback', '2026-03-01T10:00:00.000Z', {
+        notes: 'Regular body',
+        privateNotes: 'Private body',
+        transcript: 'Transcript body',
+      }),
+      meetingAt('private', 'Private fallback', '2026-03-01T11:00:00.000Z', {
+        privateNotes: 'Private body',
+        transcript: 'Transcript body',
+      }),
+      meetingAt('transcript', 'Transcript fallback', '2026-03-01T12:00:00.000Z', {
+        transcript: 'Transcript body',
+      }),
+    ]);
+
+    expect(service.homeGetNoteDetail('enhanced').body).toBe('Enhanced body');
+    expect(service.homeGetNoteDetail('notes').body).toBe('Regular body');
+    expect(service.homeGetNoteDetail('private').body).toBe('Private body');
+    expect(service.homeGetNoteDetail('transcript').body).toBe('Transcript body');
+
+    await service.dispose();
+  });
+
+  it('returns a controlled error when a requested home note is missing', async () => {
+    const dataDir = await makeTempDir();
+
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    setCachedMeetings(service, []);
+
+    expect(() => service.homeGetNoteDetail('missing-note')).toThrow(/Meeting note not found/i);
+
+    await service.dispose();
+  });
+
+  it('loads chat recipes from the Granola desktop cache with featured chips first', async () => {
+    const dataDir = await makeTempDir();
+    const granolaDesktopCacheFile = path.join(dataDir, 'cache-v6.json');
+    await writeGranolaDesktopCache(granolaDesktopCacheFile);
+
+    const service = new GranolaTaskService({
+      dataDir,
+      granolaDesktopCacheFile,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    const home = await service.chatGetHome();
+
+    expect(home.defaultScope).toBe('all_meetings');
+    expect(home.modelLabel).toBe('Auto');
+    expect(home.recipes.slice(0, 5).map((recipe) => recipe.label)).toEqual([
+      'List recent todos',
+      'Coach me Matt',
+      'Write weekly recap',
+      'Streamline my calendar',
+      'Blind spots',
+    ]);
+    expect(home.recipes[5]).toMatchObject({
+      id: 'recipe-custom-followup',
+      label: 'Custom follow up',
+    });
+
+    await service.dispose();
+  });
+
+  it('falls back to bundled chat recipes when the Granola desktop cache is unavailable', async () => {
+    const dataDir = await makeTempDir();
+    const granolaDesktopCacheFile = path.join(dataDir, 'missing-cache-v6.json');
+
+    const service = new GranolaTaskService({
+      dataDir,
+      granolaDesktopCacheFile,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    const home = await service.chatGetHome();
+
+    expect(home.recipes[0]).toMatchObject({
+      label: 'List recent todos',
+      creatorLabel: 'Granola',
+    });
+
+    await service.dispose();
+  });
+
+  it('uses recipe instructions for chat execution instead of the recipe label', async () => {
+    const dataDir = await makeTempDir();
+    const granolaDesktopCacheFile = path.join(dataDir, 'cache-v6.json');
+    await writeGranolaDesktopCache(granolaDesktopCacheFile);
+
+    const service = new GranolaTaskService({
+      dataDir,
+      granolaDesktopCacheFile,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    const callTool = vi.fn(async ({ arguments: args }: { arguments?: Record<string, unknown> }) =>
+      plainTextResult(`Handled ${(args?.query as string) ?? ''}`),
+    );
+    const fakeClient = {
+      listTools: vi.fn(async () => ({
+        tools: [
+          {
+            name: 'query_granola_meetings',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: { type: 'string' },
+                meeting_ids: { type: 'array' },
+              },
+            },
+          },
+        ],
+      })),
+      callTool,
+    };
+
+    (
+      service as unknown as {
+        withAuthenticatedClient: <T>(fn: (client: unknown) => Promise<T>) => Promise<T>;
+      }
+    ).withAuthenticatedClient = async <T>(fn: (client: unknown) => Promise<T>) => await fn(fakeClient);
+
+    const result = await service.chatSendMessage({
+      text: 'List recent todos',
+      recipeId: 'recipe-list-recent-todos',
+      scope: 'all_meetings',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool.mock.calls[0]?.[0]).toMatchObject({
+      name: 'query_granola_meetings',
+      arguments: expect.objectContaining({
+        query: 'List my recent todos across meetings.',
+      }),
+    });
+
+    await service.dispose();
+  });
+
+  it('retries all-meetings chat once with cached meeting ids when the MCP response requires documents', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    setCachedMeetings(service, [
+      meetingAt('meeting-1', 'Weekly sync', '2026-03-20T09:00:00.000Z'),
+      meetingAt('meeting-2', 'Pipeline review', '2026-03-20T10:00:00.000Z'),
+    ]);
+
+    const callTool = vi.fn(async ({ arguments: args }: { arguments?: Record<string, unknown> }) => {
+      const meetingIds = Array.isArray(args?.meeting_ids) ? args.meeting_ids : [];
+      if (meetingIds.length === 0) {
+        return plainTextResult('No documents selected. At least one meeting is required.');
+      }
+      return plainTextResult('Here is the answer.', { meeting_id: 'meeting-1', title: 'Weekly sync' });
+    });
+    const fakeClient = {
+      listTools: vi.fn(async () => ({
+        tools: [
+          {
+            name: 'query_granola_meetings',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: { type: 'string' },
+                meeting_ids: { type: 'array' },
+              },
+              required: ['query', 'meeting_ids'],
+            },
+          },
+        ],
+      })),
+      callTool,
+    };
+
+    (
+      service as unknown as {
+        withAuthenticatedClient: <T>(fn: (client: unknown) => Promise<T>) => Promise<T>;
+      }
+    ).withAuthenticatedClient = async <T>(fn: (client: unknown) => Promise<T>) => await fn(fakeClient);
+
+    const result = await service.chatSendMessage({
+      text: 'What should I focus on?',
+      scope: 'all_meetings',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(callTool.mock.calls[0]?.[0]).toMatchObject({
+      arguments: {
+        query: 'What should I focus on?',
+        meeting_ids: [],
+      },
+    });
+    expect(callTool.mock.calls[1]?.[0]).toMatchObject({
+      arguments: {
+        query: 'What should I focus on?',
+        meeting_ids: ['meeting-1', 'meeting-2'],
+      },
+    });
+    expect(result.assistantMessage?.sources).toEqual([
+      {
+        id: 'meeting:meeting-1',
+        label: 'Weekly sync',
+        url: 'https://notes.granola.ai/t/meeting-1',
+      },
+    ]);
+
+    await service.dispose();
+  });
+
+  it('stores an assistant reply without sources when the query result raw payload is missing', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+    const fakeClient = {
+      listTools: vi.fn(async () => ({
+        tools: [
+          {
+            name: 'query_granola_meetings',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: { type: 'string' },
+              },
+            },
+          },
+        ],
+      })),
+      callTool: vi.fn(async () => plainTextResult('Plain answer only')),
+    };
+
+    (
+      service as unknown as {
+        withAuthenticatedClient: <T>(fn: (client: unknown) => Promise<T>) => Promise<T>;
+      }
+    ).withAuthenticatedClient = async <T>(fn: (client: unknown) => Promise<T>) => await fn(fakeClient);
+
+    const result = await service.chatSendMessage({
+      text: 'Plain question',
+      scope: 'all_meetings',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.assistantMessage?.sources).toEqual([]);
 
     await service.dispose();
   });

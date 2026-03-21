@@ -18,6 +18,7 @@ import { MeetingsCacheStore } from '../../../../packages/granola-pipeline/src/ca
 import { EncryptedTokenStore } from '../../../../packages/granola-pipeline/src/token-store.js';
 import { TodoStore } from '../../../../packages/granola-pipeline/src/todo-store.js';
 import { TaskChatStore, type TaskChatStoreDocument } from './chat-store.js';
+import { GranolaChatStore, type GranolaChatStoreDocument, type PersistedGranolaChatThread } from './granola-chat-store.js';
 import { OAuthCallbackServer } from './oauth-callback.js';
 import { IronclawRuntime, type IronclawToolPayload } from '../../../../packages/execution-ironclaw/src/ironclaw-runtime.js';
 import { migrateLegacyOpenclawData, type LegacyDataMigrationStatus } from './data-migration.js';
@@ -37,7 +38,16 @@ import type {
   TodoStoreDocument,
 } from '../../../../packages/granola-pipeline/src/types.js';
 import type {
+  GranolaChatHome,
+  GranolaChatMessage,
+  GranolaChatRecipe,
+  GranolaChatRecentThread,
+  GranolaChatScope,
+  GranolaChatSource,
+  GranolaChatThread,
   GranolaAuthStatus,
+  HomeFeed,
+  HomeNoteDetail,
   TaskChatMessage,
   TaskChatMessageType,
   TaskChatTrace,
@@ -64,6 +74,7 @@ const execFileAsync = promisify(execFile);
 interface GranolaTaskServiceOptions {
   dataDir: string;
   mcpUrl?: string;
+  granolaDesktopCacheFile?: string;
   tokenEncryptionKey?: string;
   ironclawProfile?: string;
   ironclawAgentId?: string;
@@ -175,8 +186,37 @@ interface ChatRuntimeState {
   threads: Record<string, TaskChatMessage[]>;
 }
 
+interface GranolaChatRuntimeState {
+  loaded: boolean;
+  saveChain: Promise<void>;
+  threads: Record<string, PersistedGranolaChatThread>;
+}
+
+interface GranolaDesktopCacheRecipeEntry {
+  id: string;
+  slug: string;
+  label: string;
+  description: string;
+  instructions: string;
+  creatorLabel: string;
+  lastUsedAtMs: number;
+}
+
+interface GranolaDesktopChatCatalog {
+  loadedAtMs: number;
+  featuredRecipes: GranolaChatRecipe[];
+  recipes: GranolaChatRecipe[];
+  recipesById: Map<string, GranolaChatRecipe>;
+  defaultScope: GranolaChatScope;
+  modelLabel: string;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -358,6 +398,78 @@ function formatDateIso(value: string | null): string {
     return value || 'Unknown';
   }
   return new Date(parsed).toLocaleString();
+}
+
+function isSameLocalDay(left: Date, right: Date): boolean {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function formatHomeGroupLabel(value: string | null): string {
+  const parsed = parseIsoDate(value);
+  if (parsed === null) {
+    return 'Recent';
+  }
+
+  const date = new Date(parsed);
+  const now = new Date();
+  if (isSameLocalDay(date, now)) {
+    return 'Today';
+  }
+
+  const options: Intl.DateTimeFormatOptions =
+    date.getFullYear() === now.getFullYear()
+      ? { weekday: 'short', month: 'short', day: 'numeric' }
+      : { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
+  return date.toLocaleDateString('en-US', options);
+}
+
+function formatHomeTimeLabel(value: string | null): string {
+  const parsed = parseIsoDate(value);
+  if (parsed === null) {
+    return '--:--';
+  }
+  return new Date(parsed).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase();
+}
+
+function formatHomeDetailDateLabel(value: string | null): string {
+  const parsed = parseIsoDate(value);
+  if (parsed === null) {
+    return 'Unknown date';
+  }
+
+  const date = new Date(parsed);
+  const now = new Date();
+  const options: Intl.DateTimeFormatOptions =
+    date.getFullYear() === now.getFullYear()
+      ? { month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric', year: 'numeric' };
+  return date.toLocaleDateString('en-US', options);
+}
+
+function formatHomeUpcomingMeeting(value: string | null): {
+  dayLabel: string;
+  monthLabel: string;
+  weekdayLabel: string;
+  timeLabel: string;
+  startsAt: string | null;
+} | null {
+  const parsed = parseIsoDate(value);
+  if (parsed === null) {
+    return null;
+  }
+
+  const date = new Date(parsed);
+  return {
+    dayLabel: date.toLocaleDateString('en-US', { day: 'numeric' }),
+    monthLabel: date.toLocaleDateString('en-US', { month: 'long' }),
+    weekdayLabel: date.toLocaleDateString('en-US', { weekday: 'short' }),
+    timeLabel: date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    startsAt: date.toISOString(),
+  };
 }
 
 function normalizeTodoStatus(
@@ -676,6 +788,180 @@ function compactSingleLineText(value: unknown, maxLength = 220): string {
     return '';
   }
   return clampText(normalized, maxLength);
+}
+
+function selectHomeNoteBody(meeting: GranolaMeeting): string {
+  const candidates = [
+    compactMultilineText(meeting.enhancedNotes, 20_000),
+    compactMultilineText(meeting.notes, 20_000),
+    compactMultilineText(meeting.privateNotes, 20_000),
+    compactMultilineText(meeting.transcript, 20_000),
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return 'No notes available yet.';
+}
+
+const GRANOLA_VISIBLE_CHAT_RECIPE_SLUGS = [
+  'list-recent-todos',
+  'coach-me-Matt',
+  'write-weekly-recap',
+  'Streamline-my-calendar',
+  'blind-spots',
+] as const;
+
+const FALLBACK_CHAT_RECIPES: GranolaChatRecipe[] = [
+  {
+    id: 'fallback-list-recent-todos',
+    label: 'List recent todos',
+    description: 'Extracts and displays your outstanding to-dos from recent meeting notes.',
+    instructions: 'Present a concise list of my recent action items, organized by meeting and recency.',
+    creatorLabel: 'Granola',
+  },
+  {
+    id: 'fallback-coach-me-matt',
+    label: 'Coach me Matt',
+    description: 'Delivers leadership coaching advice based on the Mochary Method.',
+    instructions: 'Give direct leadership coaching based on my recent meetings, using the Mochary Method style.',
+    creatorLabel: 'Matt Mochary',
+  },
+  {
+    id: 'fallback-write-weekly-recap',
+    label: 'Write weekly recap',
+    description: 'Generates a weekly recap of accomplishments for your team.',
+    instructions: 'Write a concise weekly recap of what I accomplished, based on my recent meetings.',
+    creatorLabel: 'Granola',
+  },
+  {
+    id: 'fallback-streamline-my-calendar',
+    label: 'Streamline my calendar',
+    description: 'Suggests three things to improve your week.',
+    instructions: 'Review my upcoming week and suggest 2-3 changes that would improve my schedule.',
+    creatorLabel: 'Peter Yang',
+  },
+  {
+    id: 'fallback-blind-spots',
+    label: 'Blind spots',
+    description: 'Identifies risks, concerns, blind spots, and attack vectors in discussed plans.',
+    instructions: 'Analyze my meeting notes for risks, blind spots, and attack vectors, then suggest mitigations.',
+    creatorLabel: 'Tom (Engineer at Granola)',
+  },
+];
+
+function humanizeRecipeLabel(slug: string): string {
+  const normalized = slug.replace(/[_-]+/g, ' ').trim();
+  if (!normalized) {
+    return 'Untitled recipe';
+  }
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function formatCompactRelativeTime(value: string, nowMs = Date.now()): string {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return '';
+  }
+  const diffMs = Math.max(0, nowMs - parsed);
+  const minuteMs = 60_000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+  const weekMs = 7 * dayMs;
+  if (diffMs < hourMs) {
+    return `${Math.max(1, Math.round(diffMs / minuteMs))}m`;
+  }
+  if (diffMs < dayMs) {
+    return `${Math.max(1, Math.round(diffMs / hourMs))}h`;
+  }
+  if (diffMs < weekMs) {
+    return `${Math.max(1, Math.round(diffMs / dayMs))}d`;
+  }
+  return `${Math.max(1, Math.round(diffMs / weekMs))}w`;
+}
+
+function granolaChatWarningSnapshot(cacheState: CacheState, todoState: TodoRuntimeState): {
+  warning: string | null;
+  warningDetails: string[];
+} {
+  const warning = todoState.lastSubmissionError
+    ? 'Todo executor has recent submission issues. Admin review is required.'
+    : cacheState.warnings[0] ?? null;
+  return {
+    warning,
+    warningDetails: warning && !todoState.lastSubmissionError ? cacheState.warningDetails : [],
+  };
+}
+
+function createGranolaChatThreadTitle(value: string): string {
+  const compact = compactSingleLineText(value, 86);
+  if (!compact) {
+    return 'New chat';
+  }
+  return compact;
+}
+
+function isAllowedGranolaGlobalRecipeView(value: unknown): boolean {
+  return value === 'global' || value === 'search' || value === 'list' || value === 'web-list';
+}
+
+function parseGranolaDesktopRecipeEntry(
+  raw: unknown,
+  lastUsedAtMs: number,
+): GranolaDesktopCacheRecipeEntry | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const id = compactSingleLineText(record.id, 120);
+  const slug = compactSingleLineText(record.slug, 160);
+  const config = record.config && typeof record.config === 'object' && !Array.isArray(record.config)
+    ? (record.config as Record<string, unknown>)
+    : null;
+  const description = compactSingleLineText(config?.description, 280);
+  const instructions = compactMultilineText(typeof config?.instructions === 'string' ? config.instructions : null, 40_000);
+  const allowedViews = Array.isArray(config?.allowed_views) ? config?.allowed_views : [];
+  const creatorInfo = record.creator_info && typeof record.creator_info === 'object' && !Array.isArray(record.creator_info)
+    ? (record.creator_info as Record<string, unknown>)
+    : null;
+  const creatorLabel =
+    compactSingleLineText(creatorInfo?.name ?? record.creator_name ?? record.publisher_slug, 120) || 'Granola';
+
+  if (!id || !slug || !instructions) {
+    return null;
+  }
+  if (!allowedViews.some((item) => isAllowedGranolaGlobalRecipeView(item))) {
+    return null;
+  }
+
+  return {
+    id,
+    slug,
+    label: humanizeRecipeLabel(slug),
+    description: description || 'Granola recipe',
+    instructions,
+    creatorLabel,
+    lastUsedAtMs,
+  };
+}
+
+function shouldRetryGlobalMeetingQuery(message: string): boolean {
+  const lowered = message.toLowerCase();
+  const mentionsTarget = lowered.includes('meeting') || lowered.includes('document');
+  if (!mentionsTarget) {
+    return false;
+  }
+  return (
+    lowered.includes('required') ||
+    lowered.includes('missing') ||
+    lowered.includes('must provide') ||
+    lowered.includes('must select') ||
+    lowered.includes('no documents') ||
+    lowered.includes('at least one')
+  );
 }
 
 function parseJsonObjectStrict(text: string): Record<string, unknown> | null {
@@ -1055,6 +1341,8 @@ export class GranolaTaskService {
 
   private readonly mcpUrl: string;
 
+  private readonly granolaDesktopCacheFile: string;
+
   private readonly liveRequestTimeoutMs: number;
 
   private readonly autoSyncIntervalMs: number;
@@ -1074,6 +1362,8 @@ export class GranolaTaskService {
   private readonly todoStore: TodoStore;
 
   private readonly chatStore: TaskChatStore;
+
+  private readonly granolaChatStore: GranolaChatStore;
 
   private readonly callbackServer: OAuthCallbackServer;
 
@@ -1190,6 +1480,14 @@ export class GranolaTaskService {
 
   private chatPersistTimer: NodeJS.Timeout | null = null;
 
+  private granolaChatState: GranolaChatRuntimeState = {
+    loaded: false,
+    saveChain: Promise.resolve(),
+    threads: {},
+  };
+
+  private granolaDesktopChatCatalog: GranolaDesktopChatCatalog | null = null;
+
   private lastFeedBroadcastAt = 0;
 
   private ironclawVersion: string | null = null;
@@ -1209,6 +1507,8 @@ export class GranolaTaskService {
 
   constructor(private readonly options: GranolaTaskServiceOptions) {
     this.mcpUrl = options.mcpUrl ?? 'https://mcp.granola.ai/mcp';
+    this.granolaDesktopCacheFile =
+      options.granolaDesktopCacheFile ?? path.join(process.env.HOME || '/Users/motasimrahman', 'Library/Application Support/Granola/cache-v6.json');
     this.liveRequestTimeoutMs = options.liveRequestTimeoutMs ?? 12_000;
     this.autoSyncIntervalMs = options.autoSyncIntervalMs ?? 300_000;
     this.pendingAuthTtlMs = Math.max(60_000, options.pendingAuthTtlMs ?? 10 * 60_000);
@@ -1233,6 +1533,7 @@ export class GranolaTaskService {
     this.cacheStore = new MeetingsCacheStore(path.join(options.dataDir, 'meetings-cache.json'));
     this.todoStore = new TodoStore(path.join(options.dataDir, 'todo-store.json'));
     this.chatStore = new TaskChatStore(path.join(options.dataDir, 'task-chat-store.json'));
+    this.granolaChatStore = new GranolaChatStore(path.join(options.dataDir, 'granola-chat-store.json'));
 
     this.callbackServer = new OAuthCallbackServer({
       host: options.callbackHost ?? '127.0.0.1',
@@ -1818,6 +2119,39 @@ export class GranolaTaskService {
 
     const next = this.chatState.saveChain.then(run, run);
     this.chatState.saveChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private async loadPersistedGranolaChatState(): Promise<void> {
+    const persisted = await this.granolaChatStore.load();
+    this.granolaChatState.loaded = true;
+    this.granolaChatState.threads = persisted.threads ?? {};
+  }
+
+  private async persistGranolaChatState(): Promise<void> {
+    if (!this.granolaChatState.loaded) {
+      return;
+    }
+
+    const document: Partial<GranolaChatStoreDocument> = {
+      version: 1,
+      threads: this.granolaChatState.threads,
+    };
+    await this.granolaChatStore.save(document);
+  }
+
+  private async withGranolaChatStateWrite<T>(mutator: () => Promise<T>): Promise<T> {
+    const run = async (): Promise<T> => {
+      const output = await mutator();
+      await this.persistGranolaChatState();
+      return output;
+    };
+
+    const next = this.granolaChatState.saveChain.then(run, run);
+    this.granolaChatState.saveChain = next.then(
       () => undefined,
       () => undefined,
     );
@@ -2546,6 +2880,7 @@ export class GranolaTaskService {
     await this.loadPersistedCacheState();
     await this.loadPersistedTodoState();
     await this.loadPersistedChatState();
+    await this.loadPersistedGranolaChatState();
     await this.ensureLegacyGatewayLaunchAgentDisabledOnce();
     await this.ensureThreadsFromTodos();
     await this.recoverInterruptedExecutions();
@@ -2781,16 +3116,6 @@ export class GranolaTaskService {
     }
 
     try {
-      const redirectUrl = await this.ensureCallbackServerStarted();
-      const mismatchedPendingCleared = this.invalidateMismatchedPendingAuthorization(redirectUrl);
-      if (mismatchedPendingCleared) {
-        await this.persistAuthState();
-        return {
-          ok: false,
-          message: 'Pending authorization URL is stale. Click Connect Granola to start a new authorization.',
-        };
-      }
-
       const pendingAuthorizationUrl = this.isPendingAuthorizationFresh()
         ? String(this.authState.pendingAuthorizationUrl ?? '').trim()
         : '';
@@ -2798,6 +3123,16 @@ export class GranolaTaskService {
         return {
           ok: false,
           message: 'No pending authorization URL. Click Connect Granola to start a new authorization.',
+        };
+      }
+
+      const redirectUrl = await this.ensureCallbackServerStarted();
+      const mismatchedPendingCleared = this.invalidateMismatchedPendingAuthorization(redirectUrl);
+      if (mismatchedPendingCleared) {
+        await this.persistAuthState();
+        return {
+          ok: false,
+          message: 'Pending authorization URL is stale. Click Connect Granola to start a new authorization.',
         };
       }
 
@@ -4613,6 +4948,412 @@ export class GranolaTaskService {
         error: this.migrationStatus.error,
         markerPath: this.migrationStatus.markerPath,
       },
+    };
+  }
+
+  private currentGranolaChatThreads(): PersistedGranolaChatThread[] {
+    return Object.values(this.granolaChatState.threads).sort((left, right) => {
+      const leftTime = parseDateForSort(left.updatedAt);
+      const rightTime = parseDateForSort(right.updatedAt);
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+      return left.threadId.localeCompare(right.threadId);
+    });
+  }
+
+  private toGranolaChatRecentThread(thread: PersistedGranolaChatThread): GranolaChatRecentThread {
+    return {
+      threadId: thread.threadId,
+      title: thread.title,
+      updatedAt: thread.updatedAt,
+      timeLabel: formatCompactRelativeTime(thread.updatedAt),
+    };
+  }
+
+  private buildGranolaChatSources(raw: unknown): GranolaChatSource[] {
+    const sources: GranolaChatSource[] = [];
+    const seen = new Set<string>();
+    const urls = new Set<string>();
+    extractUrlCandidates(raw, urls, 6);
+
+    for (const url of urls) {
+      if (!url || seen.has(url)) {
+        continue;
+      }
+      seen.add(url);
+      sources.push({
+        id: `url:${url}`,
+        label: domainFromUrl(url) ?? 'Source',
+        url,
+      });
+      if (sources.length >= 4) {
+        return sources;
+      }
+    }
+
+    const rawText = compactMultilineText(typeof raw === 'string' ? raw : JSON.stringify(raw ?? null), 40_000);
+    for (const meeting of this.cacheState.meetings) {
+      if (sources.length >= 4) {
+        break;
+      }
+      if (!meeting.id) {
+        continue;
+      }
+      const meetingIdMatch = rawText.includes(meeting.id);
+      const titleMatch = meeting.title && meeting.title.length > 6 ? rawText.includes(meeting.title) : false;
+      if (!meetingIdMatch && !titleMatch) {
+        continue;
+      }
+      const url = `https://notes.granola.ai/t/${meeting.id}`;
+      if (seen.has(url)) {
+        continue;
+      }
+      seen.add(url);
+      sources.push({
+        id: `meeting:${meeting.id}`,
+        label: compactSingleLineText(meeting.title, 80) || 'Meeting note',
+        url,
+      });
+    }
+
+    return sources;
+  }
+
+  private async loadGranolaDesktopChatCatalog(force = false): Promise<GranolaDesktopChatCatalog> {
+    const now = Date.now();
+    if (!force && this.granolaDesktopChatCatalog && now - this.granolaDesktopChatCatalog.loadedAtMs < 60_000) {
+      return this.granolaDesktopChatCatalog;
+    }
+
+    const fallbackCatalog: GranolaDesktopChatCatalog = {
+      loadedAtMs: now,
+      featuredRecipes: FALLBACK_CHAT_RECIPES,
+      recipes: FALLBACK_CHAT_RECIPES,
+      recipesById: new Map(FALLBACK_CHAT_RECIPES.map((recipe) => [recipe.id, recipe])),
+      defaultScope: 'all_meetings',
+      modelLabel: 'Auto',
+    };
+
+    try {
+      const raw = await readFile(this.granolaDesktopCacheFile, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      const cache = isRecord(parsed) && isRecord(parsed.cache) ? parsed.cache : null;
+      const state = cache && isRecord(cache.state) ? cache.state : null;
+      if (!state) {
+        this.granolaDesktopChatCatalog = fallbackCatalog;
+        return fallbackCatalog;
+      }
+
+      const usageRaw = isRecord(state.recipesUsage) ? state.recipesUsage : {};
+      const recipeCandidates = [
+        ...(Array.isArray(state.publicRecipes) ? state.publicRecipes : []),
+        ...(Array.isArray(state.userRecipes) ? state.userRecipes : []),
+        ...(Array.isArray(state.sharedRecipes) ? state.sharedRecipes : []),
+      ];
+
+      const entries = recipeCandidates
+        .map((candidate) => {
+          const candidateRecord = isRecord(candidate) ? candidate : null;
+          const recipeId = compactSingleLineText(candidateRecord?.id, 120);
+          const usageRecord = recipeId && isRecord(usageRaw[recipeId]) ? usageRaw[recipeId] : null;
+          const lastUsedAtMs = parseDateForSort(typeof usageRecord?.last_used_at === 'string' ? usageRecord.last_used_at : null);
+          return parseGranolaDesktopRecipeEntry(candidate, lastUsedAtMs);
+        })
+        .filter((item): item is GranolaDesktopCacheRecipeEntry => item !== null)
+        .sort((left, right) => {
+          if (left.lastUsedAtMs !== right.lastUsedAtMs) {
+            return right.lastUsedAtMs - left.lastUsedAtMs;
+          }
+          return left.label.localeCompare(right.label);
+        });
+
+      const entryBySlug = new Map(entries.map((entry) => [entry.slug, entry]));
+      const featuredRecipes = GRANOLA_VISIBLE_CHAT_RECIPE_SLUGS.map((slug) => entryBySlug.get(slug))
+        .filter((item): item is GranolaDesktopCacheRecipeEntry => Boolean(item))
+        .map((entry) => ({
+          id: entry.id,
+          label: entry.label,
+          description: entry.description,
+          instructions: entry.instructions,
+          creatorLabel: entry.creatorLabel,
+        }));
+
+      const remainingRecipes = entries
+        .filter((entry) => !GRANOLA_VISIBLE_CHAT_RECIPE_SLUGS.includes(entry.slug as (typeof GRANOLA_VISIBLE_CHAT_RECIPE_SLUGS)[number]))
+        .map((entry) => ({
+          id: entry.id,
+          label: entry.label,
+          description: entry.description,
+          instructions: entry.instructions,
+          creatorLabel: entry.creatorLabel,
+        }));
+
+      const recipes = [...featuredRecipes, ...remainingRecipes];
+      const multiChatState = isRecord(state.multiChatState) ? state.multiChatState : null;
+      const selectedModel = compactSingleLineText(multiChatState?.selectedModel, 32).toLowerCase();
+      const modelLabel = selectedModel === 'auto' || !selectedModel ? 'Auto' : humanizeRecipeLabel(selectedModel);
+
+      const catalog: GranolaDesktopChatCatalog = {
+        loadedAtMs: now,
+        featuredRecipes: featuredRecipes.length > 0 ? featuredRecipes : FALLBACK_CHAT_RECIPES,
+        recipes: recipes.length > 0 ? recipes : FALLBACK_CHAT_RECIPES,
+        recipesById: new Map((recipes.length > 0 ? recipes : FALLBACK_CHAT_RECIPES).map((recipe) => [recipe.id, recipe])),
+        defaultScope: 'all_meetings',
+        modelLabel,
+      };
+      this.granolaDesktopChatCatalog = catalog;
+      return catalog;
+    } catch {
+      this.granolaDesktopChatCatalog = fallbackCatalog;
+      return fallbackCatalog;
+    }
+  }
+
+  private async queryGranolaChatResponse(client: Client, prompt: string) {
+    const trimmedPrompt = compactMultilineText(prompt, 40_000) || 'Summarize my recent meetings.';
+    const fallbackMeetingIds = this.cacheState.meetings.map((meeting) => meeting.id).filter(Boolean);
+
+    try {
+      const response = await queryGranolaMeetings(client, trimmedPrompt);
+      if (fallbackMeetingIds.length > 0 && shouldRetryGlobalMeetingQuery(response.answer)) {
+        return await queryGranolaMeetings(client, trimmedPrompt, fallbackMeetingIds);
+      }
+      return response;
+    } catch (error) {
+      const message = safeErrorMessage(error);
+      if (fallbackMeetingIds.length > 0 && shouldRetryGlobalMeetingQuery(message)) {
+        return await queryGranolaMeetings(client, trimmedPrompt, fallbackMeetingIds);
+      }
+      throw error;
+    }
+  }
+
+  async chatGetHome(): Promise<GranolaChatHome> {
+    const catalog = await this.loadGranolaDesktopChatCatalog();
+    const warningSnapshot = granolaChatWarningSnapshot(this.cacheState, this.todoState);
+
+    return {
+      connectionState: this.connectionState(),
+      lastSyncAt: this.lastSyncAt,
+      warning: warningSnapshot.warning,
+      warningDetails: warningSnapshot.warningDetails,
+      recipes: catalog.recipes,
+      recentThreads: this.currentGranolaChatThreads().map((thread) => this.toGranolaChatRecentThread(thread)),
+      defaultScope: catalog.defaultScope,
+      modelLabel: catalog.modelLabel,
+    };
+  }
+
+  chatGetThread(threadId: string): GranolaChatThread {
+    const thread = this.granolaChatState.threads[threadId];
+    if (!thread) {
+      throw new Error(`Granola chat thread not found: ${threadId}`);
+    }
+
+    return {
+      threadId: thread.threadId,
+      title: thread.title,
+      scope: thread.scope,
+      messages: [...thread.messages].sort((a, b) => {
+        const left = parseDateForSort(a.createdAt);
+        const right = parseDateForSort(b.createdAt);
+        if (left !== right) {
+          return left - right;
+        }
+        return a.messageId.localeCompare(b.messageId);
+      }),
+      updatedAt: thread.updatedAt,
+    };
+  }
+
+  async chatSendMessage(input: {
+    threadId?: string | null;
+    text: string;
+    scope: GranolaChatScope;
+    recipeId?: string | null;
+  }): Promise<{
+    ok: boolean;
+    threadId: string;
+    userMessage?: GranolaChatMessage;
+    assistantMessage?: GranolaChatMessage;
+    message?: string;
+  }> {
+    const scope = input.scope === 'all_meetings' ? input.scope : null;
+    const displayText = compactMultilineText(input.text, 8_000);
+    const requestedThreadId = compactSingleLineText(input.threadId ?? '', 120);
+    const threadId = requestedThreadId || randomUUID();
+
+    if (!scope) {
+      return {
+        ok: false,
+        threadId,
+        message: 'Only all-meetings chat is supported right now.',
+      };
+    }
+    if (!displayText) {
+      return {
+        ok: false,
+        threadId,
+        message: 'Enter a message to continue.',
+      };
+    }
+
+    const catalog = await this.loadGranolaDesktopChatCatalog();
+    const recipe = input.recipeId ? catalog.recipesById.get(input.recipeId) ?? null : null;
+    const queryText = recipe?.instructions || displayText;
+    const initialTitle = createGranolaChatThreadTitle(recipe?.label || displayText);
+    const userMessage: GranolaChatMessage = {
+      messageId: randomUUID(),
+      threadId,
+      role: 'user',
+      content: displayText,
+      createdAt: nowIso(),
+      status: 'completed',
+      thoughtDurationSeconds: null,
+    };
+
+    await this.withGranolaChatStateWrite(async () => {
+      const current = this.granolaChatState.threads[threadId] ?? {
+        threadId,
+        title: initialTitle,
+        scope,
+        createdAt: userMessage.createdAt,
+        updatedAt: userMessage.createdAt,
+        messages: [],
+      };
+      this.granolaChatState.threads[threadId] = {
+        ...current,
+        title: current.title || initialTitle,
+        updatedAt: userMessage.createdAt,
+        messages: [...current.messages, userMessage],
+      };
+    });
+    this.emitFeedUpdated(true);
+
+    const startedAtMs = Date.now();
+
+    try {
+      const response = await this.withAuthenticatedClient(async (client) => {
+        return await this.queryGranolaChatResponse(client, queryText);
+      });
+      const assistantMessage: GranolaChatMessage = {
+        messageId: randomUUID(),
+        threadId,
+        role: 'assistant',
+        content: compactMultilineText(response.answer, 40_000) || 'No response text was returned by Granola.',
+        createdAt: nowIso(),
+        status: 'completed',
+        sources: this.buildGranolaChatSources(response.raw),
+        thoughtDurationSeconds: Math.max(1, Math.round((Date.now() - startedAtMs) / 1000)),
+      };
+
+      await this.withGranolaChatStateWrite(async () => {
+        const current = this.granolaChatState.threads[threadId];
+        if (!current) {
+          return;
+        }
+        this.granolaChatState.threads[threadId] = {
+          ...current,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...current.messages, assistantMessage],
+        };
+      });
+      this.emitFeedUpdated(true);
+
+      return {
+        ok: true,
+        threadId,
+        userMessage,
+        assistantMessage,
+      };
+    } catch (error) {
+      const assistantMessage: GranolaChatMessage = {
+        messageId: randomUUID(),
+        threadId,
+        role: 'assistant',
+        content: safeErrorMessage(error),
+        createdAt: nowIso(),
+        status: 'error',
+        sources: [],
+        thoughtDurationSeconds: Math.max(1, Math.round((Date.now() - startedAtMs) / 1000)),
+      };
+
+      await this.withGranolaChatStateWrite(async () => {
+        const current = this.granolaChatState.threads[threadId];
+        if (!current) {
+          return;
+        }
+        this.granolaChatState.threads[threadId] = {
+          ...current,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...current.messages, assistantMessage],
+        };
+      });
+      this.emitFeedUpdated(true);
+
+      return {
+        ok: false,
+        threadId,
+        userMessage,
+        assistantMessage,
+        message: assistantMessage.content,
+      };
+    }
+  }
+
+  homeGetFeed(): HomeFeed {
+    const meetings = [...this.cacheState.meetings].sort((a, b) => parseDateForSort(b.date) - parseDateForSort(a.date));
+    const warningSnapshot = granolaChatWarningSnapshot(this.cacheState, this.todoState);
+
+    const upcomingSource = [...meetings]
+      .filter((meeting) => parseDateForSort(meeting.date) > Date.now())
+      .sort((a, b) => parseDateForSort(a.date) - parseDateForSort(b.date))[0];
+    const upcomingParts = upcomingSource ? formatHomeUpcomingMeeting(upcomingSource.date) : null;
+
+    return {
+      recentNotes: meetings.map((meeting) => ({
+        id: meeting.id,
+        title: compactSingleLineText(meeting.title, 180) || 'Untitled note',
+        ownerLabel: 'Me',
+        groupLabel: formatHomeGroupLabel(meeting.date),
+        timeLabel: formatHomeTimeLabel(meeting.date),
+        visibility: 'private',
+      })),
+      upcomingMeeting:
+        upcomingSource && upcomingParts
+          ? {
+              id: upcomingSource.id,
+              title: compactSingleLineText(upcomingSource.title, 160) || 'Untitled meeting',
+              dayLabel: upcomingParts.dayLabel,
+              monthLabel: upcomingParts.monthLabel,
+              weekdayLabel: upcomingParts.weekdayLabel,
+              timeLabel: upcomingParts.timeLabel,
+              startsAt: upcomingParts.startsAt,
+            }
+          : null,
+      lastSyncAt: this.lastSyncAt,
+      syncInFlight: Boolean(this.syncInFlightPromise),
+      connectionState: this.connectionState(),
+      warning: warningSnapshot.warning,
+      warningDetails: warningSnapshot.warningDetails,
+    };
+  }
+
+  homeGetNoteDetail(noteId: string): HomeNoteDetail {
+    const meeting = this.cacheState.meetings.find((item) => item.id === noteId);
+    if (!meeting) {
+      throw new Error(`Meeting note not found: ${noteId}`);
+    }
+
+    return {
+      id: meeting.id,
+      meetingId: meeting.id,
+      title: compactSingleLineText(meeting.title, 220) || 'Untitled note',
+      dateLabel: formatHomeDetailDateLabel(meeting.date),
+      ownerLabel: 'Me',
+      body: selectHomeNoteBody(meeting),
+      shareUrl: meeting.id ? `https://notes.granola.ai/t/${meeting.id}` : null,
     };
   }
 

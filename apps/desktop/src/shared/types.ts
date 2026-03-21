@@ -322,6 +322,191 @@ export interface TasksFeed {
   selectedTodoIdHint: string | null;
 }
 
+export interface HomeRecentNote {
+  id: string;
+  title: string;
+  ownerLabel: string;
+  groupLabel: string;
+  timeLabel: string;
+  visibility: Visibility;
+}
+
+export interface HomeUpcomingMeeting {
+  id: string;
+  title: string;
+  dayLabel: string;
+  monthLabel: string;
+  weekdayLabel: string;
+  timeLabel: string;
+  startsAt: string | null;
+}
+
+export interface HomeFeed {
+  recentNotes: HomeRecentNote[];
+  upcomingMeeting: HomeUpcomingMeeting | null;
+  lastSyncAt: string | null;
+  syncInFlight: boolean;
+  connectionState: TasksConnectionState;
+  warning: string | null;
+  warningDetails: string[];
+}
+
+export interface HomeNoteDetail {
+  id: string;
+  meetingId: string;
+  title: string;
+  dateLabel: string;
+  ownerLabel: string;
+  body: string;
+  shareUrl: string | null;
+}
+
+export type GranolaChatScope = 'all_meetings';
+export type GranolaChatMessageRole = 'user' | 'assistant';
+export type GranolaChatMessageStatus = 'completed' | 'error';
+
+export interface GranolaChatSource {
+  id: string;
+  label: string;
+  url: string;
+}
+
+export interface GranolaChatMessage {
+  messageId: string;
+  threadId: string;
+  role: GranolaChatMessageRole;
+  content: string;
+  createdAt: string;
+  status: GranolaChatMessageStatus;
+  sources?: GranolaChatSource[];
+  thoughtDurationSeconds?: number | null;
+}
+
+export interface GranolaChatRecipe {
+  id: string;
+  label: string;
+  description: string;
+  instructions: string;
+  creatorLabel: string;
+}
+
+export interface GranolaChatRecentThread {
+  threadId: string;
+  title: string;
+  updatedAt: string;
+  timeLabel: string;
+}
+
+export interface GranolaChatHome {
+  connectionState: TasksConnectionState;
+  lastSyncAt: string | null;
+  warning: string | null;
+  warningDetails: string[];
+  recipes: GranolaChatRecipe[];
+  recentThreads: GranolaChatRecentThread[];
+  defaultScope: GranolaChatScope;
+  modelLabel: string;
+}
+
+export interface GranolaChatThread {
+  threadId: string;
+  title: string;
+  scope: GranolaChatScope;
+  messages: GranolaChatMessage[];
+  updatedAt: string;
+}
+
+export type DocsSection = 'home' | 'drive' | 'wiki';
+export type DocsDisplayMode = 'list' | 'grid';
+export type DocsHomeFilter = 'recent' | 'owned' | 'shared' | 'favorites';
+export type DocsIconTone = 'blue' | 'green' | 'amber' | 'violet' | 'rose' | 'slate';
+export type DocsBlockType = 'paragraph' | 'heading' | 'bullet' | 'checklist' | 'callout' | 'divider';
+
+export interface DocsSidebarSection {
+  id: DocsSection;
+  label: string;
+  description: string;
+  itemCount: number;
+}
+
+export interface DocsQuickAction {
+  id: 'new' | 'upload' | 'templates';
+  label: string;
+  description: string;
+  enabled: boolean;
+}
+
+export type DocsBlock =
+  | {
+      id: string;
+      type: 'paragraph' | 'heading' | 'bullet' | 'callout';
+      text: string;
+    }
+  | {
+      id: string;
+      type: 'checklist';
+      text: string;
+      checked: boolean;
+    }
+  | {
+      id: string;
+      type: 'divider';
+    };
+
+export interface DocsTemplate {
+  templateId: string;
+  label: string;
+  description: string;
+  section: DocsSection;
+  iconTone: DocsIconTone;
+  blocks: DocsBlock[];
+}
+
+export interface DocsDocumentSummary {
+  docId: string;
+  title: string;
+  section: DocsSection;
+  locationLabel: string;
+  ownerLabel: string;
+  createdAt: string;
+  updatedAt: string;
+  recentLabel: string;
+  preview: string;
+  favorite: boolean;
+  shared: boolean;
+  pinned: boolean;
+  iconTone: DocsIconTone;
+}
+
+export interface DocsHome {
+  workspaceTitle: string;
+  sections: DocsSidebarSection[];
+  quickActions: DocsQuickAction[];
+  templates: DocsTemplate[];
+  displayMode: DocsDisplayMode;
+  documents: DocsDocumentSummary[];
+}
+
+export interface DocsDocument extends DocsDocumentSummary {
+  breadcrumbs: string[];
+  blocks: DocsBlock[];
+}
+
+export interface DocsCreateInput {
+  templateId?: string | null;
+  section?: DocsSection | null;
+}
+
+export interface DocsUpdatePatch {
+  title?: string;
+  section?: DocsSection;
+  favorite?: boolean;
+  shared?: boolean;
+  pinned?: boolean;
+  iconTone?: DocsIconTone;
+  blocks?: DocsBlock[];
+}
+
 export interface GranolaAPI {
   getAppInfo(): Promise<AppInfo>;
   windowCommand(cmd: WindowCommand): Promise<void>;
@@ -330,6 +515,26 @@ export interface GranolaAPI {
   noteUpdate(id: string, patch: NoteUpdatePatch): Promise<Note>;
   settingsGet(): Promise<AppSettings>;
   settingsUpdate(patch: AppSettingsPatch): Promise<AppSettings>;
+  homeGetFeed(): Promise<HomeFeed>;
+  homeGetNoteDetail(id: string): Promise<HomeNoteDetail>;
+  chatGetHome(): Promise<GranolaChatHome>;
+  chatGetThread(threadId: string): Promise<GranolaChatThread>;
+  chatSendMessage(input: {
+    threadId?: string | null;
+    text: string;
+    scope: GranolaChatScope;
+    recipeId?: string | null;
+  }): Promise<{
+    ok: boolean;
+    threadId: string;
+    userMessage?: GranolaChatMessage;
+    assistantMessage?: GranolaChatMessage;
+    message?: string;
+  }>;
+  docsGetHome(): Promise<DocsHome>;
+  docsGetDocument(docId: string): Promise<DocsDocument>;
+  docsCreate(input?: DocsCreateInput): Promise<DocsDocument>;
+  docsUpdate(docId: string, patch: DocsUpdatePatch): Promise<DocsDocument>;
   tasksGetFeed(): Promise<TasksFeed>;
   tasksConnect(): Promise<{ ok: boolean; needsBrowser: boolean; message?: string }>;
   tasksOpenPendingAuthorization(): Promise<{ ok: boolean; message?: string }>;

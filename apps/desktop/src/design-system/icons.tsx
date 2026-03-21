@@ -149,6 +149,64 @@ export function ChevronDownIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function ChevronLeftIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
+      <path
+        fillRule="evenodd"
+        d="M9.78 3.97a.75.75 0 0 1 0 1.06L6.81 8l2.97 2.97a.75.75 0 1 1-1.06 1.06L5.22 8.53a.75.75 0 0 1 0-1.06l3.5-3.5a.75.75 0 0 1 1.06 0Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+export function ChevronRightIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
+      <path
+        fillRule="evenodd"
+        d="M6.22 3.97a.75.75 0 0 1 1.06 0l3.5 3.5a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 1 1-1.06-1.06L9.19 8 6.22 5.03a.75.75 0 0 1 0-1.06Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+export function CalendarIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <rect x="2.5" y="3.5" width="11" height="10" rx="2" stroke="currentColor" strokeWidth="1.25" />
+      <path d="M5 2.5V5M11 2.5V5M2.5 6.5h11" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function LinkIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M6.25 9.75 9.75 6.25M5.25 11.75h-1a2.5 2.5 0 0 1 0-5h1M10.75 4.25h1a2.5 2.5 0 0 1 0 5h-1"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function SlidersIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path d="M3 4h10M3 12h10M6 8h7" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+      <circle cx="5" cy="4" r="1.5" fill="currentColor" />
+      <circle cx="9" cy="12" r="1.5" fill="currentColor" />
+      <circle cx="4" cy="8" r="1.5" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function InviteIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
@@ -175,8 +233,14 @@ export function QuickNoteIcon(props: SVGProps<SVGSVGElement>) {
 
 export function FileIcon(props: SVGProps<SVGSVGElement>) {
   return (
-    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
-      <path d="M2.5 3.5A1.5 1.5 0 0 1 4 2h4.879a1.5 1.5 0 0 1 1.06.44l3.122 3.12a1.5 1.5 0 0 1 .439 1.061V12.5A1.5 1.5 0 0 1 12 14H4a1.5 1.5 0 0 1-1.5-1.5v-9Z" />
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M5 2.75h4.129c.265 0 .52.105.707.293l2.121 2.121c.188.188.293.442.293.707V12A1.25 1.25 0 0 1 11 13.25H5A1.25 1.25 0 0 1 3.75 12V4A1.25 1.25 0 0 1 5 2.75Z"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+      />
+      <path d="M9 2.75V5.5h2.75" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -197,6 +261,96 @@ export function MoreIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
       <path d="M2 8a1.5 1.5 0 1 1 3 0 1.5 1.5 0 0 1-3 0ZM6.5 8a1.5 1.5 0 1 1 3 0 1.5 1.5 0 0 1-3 0ZM12.5 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z" />
+    </svg>
+  );
+}
+
+export function PaperclipIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M5.75 8.75 9.6 4.9a2 2 0 1 1 2.828 2.828l-5.304 5.303a3 3 0 1 1-4.243-4.242l5.657-5.657"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function MicrophoneIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <rect x="5.25" y="1.75" width="5.5" height="8.5" rx="2.75" stroke="currentColor" strokeWidth="1.25" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.25M5.75 14.25h4.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function GridIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <rect x="2.5" y="2.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.1" />
+      <rect x="9.5" y="2.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.1" />
+      <rect x="2.5" y="9.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.1" />
+      <rect x="9.5" y="9.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.1" />
+    </svg>
+  );
+}
+
+export function RowsIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path d="M3 4.25h10M3 8h10M3 11.75h10" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+      <circle cx="2" cy="4.25" r=".75" fill="currentColor" />
+      <circle cx="2" cy="8" r=".75" fill="currentColor" />
+      <circle cx="2" cy="11.75" r=".75" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function UploadIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path d="M8 10.75V3.25M5.5 5.75 8 3.25l2.5 2.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 11.5v.5A1.5 1.5 0 0 0 4.5 13.5h7A1.5 1.5 0 0 0 13 12v-.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function StarIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="m8 2.25 1.515 3.07 3.39.493-2.453 2.392.58 3.375L8 9.986l-3.032 1.594.58-3.375L3.095 5.813l3.39-.493L8 2.25Z"
+        stroke="currentColor"
+        strokeWidth="1.15"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function ComposeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M10.75 2.75h2.5v2.5M12.75 3.25 7 9M5.25 10.75l-.75 2.5 2.5-.75 5.75-5.75a1.414 1.414 0 0 0-2-2L5 10.5Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function CopyIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <rect x="5.25" y="4.25" width="7" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M3.75 10.25h-.5A1.5 1.5 0 0 1 1.75 8.75v-5.5a1.5 1.5 0 0 1 1.5-1.5h5.5a1.5 1.5 0 0 1 1.5 1.5v.5" stroke="currentColor" strokeWidth="1.2" />
     </svg>
   );
 }

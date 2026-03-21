@@ -4,6 +4,20 @@
 
 Instructions in this file apply to the entire `yogurt` repository.
 
+## Product Doctrine
+
+Before making product, UX, or architecture decisions, read [`docs/yogurt-soul.md`](docs/yogurt-soul.md).
+
+Future work should optimize for:
+
+- centralizing context
+- reducing tool-switching
+- making AI more actionable, not just more conversational
+- preserving citations, provenance, trust, and human control
+- building Yogurt as the place work gets done, not just a meeting notes tool
+
+Keep current-state docs honest about what is implemented today, but let the doctrine shape how new work is structured and evaluated.
+
 ## UI-First Runtime Policy (Desktop)
 
 When a request references UI behavior or elements in `apps/desktop`, treat runtime inspection as mandatory first step.

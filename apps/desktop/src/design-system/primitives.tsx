@@ -51,11 +51,12 @@ type ActionPillProps = {
   icon: ReactNode;
   label: string;
   className?: string;
+  onClick?: () => void;
 };
 
-export function ActionPill({ icon, label, className }: ActionPillProps) {
+export function ActionPill({ icon, label, className, onClick }: ActionPillProps) {
   return (
-    <button type="button" className={cx('ds-action-pill', className)}>
+    <button type="button" className={cx('ds-action-pill', className)} onClick={onClick}>
       <span className="ds-action-pill__icon" aria-hidden="true">
         {icon}
       </span>
@@ -71,11 +72,12 @@ type TimelineRowProps = {
   leading: ReactNode;
   trailing: ReactNode;
   active?: boolean;
+  onClick?: () => void;
 };
 
-export function TimelineRow({ title, owner, time, leading, trailing, active = false }: TimelineRowProps) {
+export function TimelineRow({ title, owner, time, leading, trailing, active = false, onClick }: TimelineRowProps) {
   return (
-    <button type="button" className={cx('ds-timeline-row', active && 'is-active')}>
+    <button type="button" className={cx('ds-timeline-row', active && 'is-active')} onClick={onClick}>
       <span className="ds-timeline-row__leading" aria-hidden="true">
         {leading}
       </span>

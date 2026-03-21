@@ -3,9 +3,10 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { IPC_CHANNELS } from '../src/shared/channels.js';
-import type { TaskStartOptions, WindowCommand } from '../src/shared/types.js';
+import type { DocsCreateInput, DocsUpdatePatch, TaskStartOptions, WindowCommand } from '../src/shared/types.js';
 import { InMemoryGranolaService } from './store.js';
 import { GranolaTaskService } from './granolaTasks/task-service.js';
+import { GranolaDocsService } from './granolaTasks/granola-docs-service.js';
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
@@ -23,6 +24,7 @@ const isMac = process.platform === 'darwin';
 let mainWindow: BrowserWindow | null = null;
 const service = new InMemoryGranolaService();
 let taskService: GranolaTaskService | null = null;
+let docsService: GranolaDocsService | null = null;
 let taskEventUnsubscribe: (() => void) | null = null;
 
 function withMainWindow(): BrowserWindow {
@@ -37,6 +39,13 @@ function withTaskService(): GranolaTaskService {
     throw new Error('task service is not ready');
   }
   return taskService;
+}
+
+function withDocsService(): GranolaDocsService {
+  if (!docsService) {
+    throw new Error('docs service is not ready');
+  }
+  return docsService;
 }
 
 function isAppNavigation(url: string): boolean {
@@ -92,6 +101,50 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.settingsUpdate, (_event, patch: unknown) =>
     service.updateSettings(patch),
   );
+  ipcMain.handle(IPC_CHANNELS.homeGetFeed, () => withTaskService().homeGetFeed());
+  ipcMain.handle(IPC_CHANNELS.homeGetNoteDetail, (_event, id: unknown) => {
+    if (typeof id !== 'string') {
+      throw new Error('note id must be a string');
+    }
+    return withTaskService().homeGetNoteDetail(id);
+  });
+  ipcMain.handle(IPC_CHANNELS.chatGetHome, () => withTaskService().chatGetHome());
+  ipcMain.handle(IPC_CHANNELS.chatGetThread, (_event, threadId: unknown) => {
+    if (typeof threadId !== 'string') {
+      throw new Error('threadId must be a string');
+    }
+    return withTaskService().chatGetThread(threadId);
+  });
+  ipcMain.handle(IPC_CHANNELS.chatSendMessage, (_event, input: unknown) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('chat input must be an object');
+    }
+    return withTaskService().chatSendMessage(input as {
+      threadId?: string | null;
+      text: string;
+      scope: 'all_meetings';
+      recipeId?: string | null;
+    });
+  });
+  ipcMain.handle(IPC_CHANNELS.docsGetHome, () => withDocsService().docsGetHome());
+  ipcMain.handle(IPC_CHANNELS.docsGetDocument, (_event, docId: unknown) => {
+    if (typeof docId !== 'string') {
+      throw new Error('docId must be a string');
+    }
+    return withDocsService().docsGetDocument(docId);
+  });
+  ipcMain.handle(IPC_CHANNELS.docsCreate, (_event, input: unknown) =>
+    withDocsService().docsCreate((input as DocsCreateInput | null) ?? undefined),
+  );
+  ipcMain.handle(IPC_CHANNELS.docsUpdate, (_event, docId: unknown, patch: unknown) => {
+    if (typeof docId !== 'string') {
+      throw new Error('docId must be a string');
+    }
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error('docs update patch must be an object');
+    }
+    return withDocsService().docsUpdate(docId, patch as DocsUpdatePatch);
+  });
   ipcMain.handle(IPC_CHANNELS.tasksGetFeed, () => withTaskService().getFeed());
   ipcMain.handle(IPC_CHANNELS.tasksConnect, () => withTaskService().connect());
   ipcMain.handle(IPC_CHANNELS.tasksOpenPendingAuth, () => withTaskService().openPendingAuthorization());
@@ -207,9 +260,10 @@ async function createMainWindow(): Promise<void> {
 
 app.on('ready', async () => {
   app.setName('Yogurt');
+  const granolaDataDir = path.join(app.getPath('userData'), 'granola');
 
   taskService = new GranolaTaskService({
-    dataDir: path.join(app.getPath('userData'), 'granola'),
+    dataDir: granolaDataDir,
     tokenEncryptionKey: process.env.TOKEN_ENCRYPTION_KEY,
     legacyDataDir: process.env.GRANOLA_OPENCLAW_LEGACY_DATA_DIR ?? '/Users/motasimrahman/Desktop/granola-openclaw/data',
     canonicalProjectPath: path.resolve(app.getAppPath(), '../..'),
@@ -219,6 +273,8 @@ app.on('ready', async () => {
     mcpUrl: process.env.GRANOLA_MCP_URL,
   });
   await taskService.init();
+  docsService = new GranolaDocsService(granolaDataDir);
+  await docsService.init();
   taskEventUnsubscribe = taskService.onRealtimeEvent((event) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
@@ -238,6 +294,7 @@ app.on('before-quit', async () => {
   if (taskService) {
     await taskService.dispose();
   }
+  docsService = null;
 });
 
 app.on('window-all-closed', () => {

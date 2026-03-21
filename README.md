@@ -1,5 +1,14 @@
 # Yogurt Monorepo
 
+Yogurt is an AI-native work app built on living company context, where meetings, chats, docs, email, and decisions become one system that helps people think, coordinate, and get work done.
+
+Today, this repo contains an early desktop slice of that larger product. It already brings together Granola context sync, home and note browsing, cross-meeting chat, docs, and task execution workflows in one app, even though the long-term vision is broader than the current implementation.
+
+North-star doctrine:
+
+- [`docs/yogurt-soul.md`](docs/yogurt-soul.md)
+- [`docs/yogurt-soul-appendix.md`](docs/yogurt-soul-appendix.md)
+
 ## Start Here (New Contributors)
 
 If you just opened this repo and want to run it quickly:
@@ -30,8 +39,10 @@ Primary onboarding guide:
 
 Reference docs:
 
+- [`docs/yogurt-soul.md`](docs/yogurt-soul.md)
 - [`docs/operations.md`](docs/operations.md)
 - [`docs/architecture.md`](docs/architecture.md)
+- [`docs/capability-positioning.md`](docs/capability-positioning.md)
 
 ## Screenshots
 
@@ -47,17 +58,20 @@ Reference docs:
 
 ![Yogurt task chat email workflow](docs/images/app-task-chat-email.png)
 
-Yogurt is a pilot-ready internal desktop copilot that unifies:
+Yogurt is currently a desktop-first work surface that unifies:
 
-1. Granola MCP ingestion (meetings, notes, transcripts)
-2. Structured task extraction and local persistence
-3. IronClaw execution with in-app streaming chat UX
+1. Granola MCP ingestion and local context sync
+2. Home, note, chat, docs, and task surfaces in one app
+3. Task extraction, planning, and IronClaw execution workflows
 
 ## Current Capability Snapshot
 
 What works now:
 
-- Granola OAuth + sync into an in-app tasks feed
+- Granola OAuth + sync into an in-app context layer
+- Home view for recent notes and upcoming context
+- Cross-meeting AI chat and nested messenger UI
+- Docs workspace with local document persistence
 - Task extraction with deduplication and persisted local state
 - Plan-before-run workflow (recommended option + custom planning input)
 - IronClaw execution queueing with realtime chat/timeline traces
@@ -67,15 +81,16 @@ Current constraints:
 
 - External dependency on Granola MCP and IronClaw health
 - Sensitivity to local callback/gateway port conflicts
-- Desktop/Electron runtime is the primary supported path
+- Desktop/Electron runtime is the primary supported path today
+- Current implementation is still narrower than the full Yogurt work-app vision
 
 Detailed team-facing positioning: [`docs/capability-positioning.md`](docs/capability-positioning.md)
 
 ## Near-Term Roadmap (90 days)
 
 - **Now (0-30 days):** reliability hardening (OAuth callback/gateway stability, clearer sync diagnostics, deterministic trace quality)
-- **Next (31-60 days):** operator confidence (recovery UX, stronger task quality guardrails, setup/healthcheck ergonomics)
-- **Later (61-90 days):** team adoption (higher-quality deliverables, richer run observability, broader internal rollout polish)
+- **Next (31-60 days):** stronger shared work surfaces (better context flow across notes, chat, docs, and tasks)
+- **Later (61-90 days):** more actionable context (richer workflow starts, better handoffs, stronger AI assistance on top of shared context)
 
 ## Monorepo Layout
 
@@ -120,8 +135,8 @@ Key variables:
 
 1. Launch app and use sidebar `Connect Granola`.
 2. Complete browser OAuth and return to the app.
-3. Sync meetings and verify tasks in the Tasks list.
-4. Start a task to open in-app task chat and stream execution updates.
+3. Sync meetings and verify context is available across Home, Chat, Docs, and Tasks.
+4. Use the work surface you need: browse notes, chat across meetings, work in docs, or start a task run.
 
 ## Commands
 
