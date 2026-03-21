@@ -4,6 +4,53 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../../../packages/execution-ironclaw/src/ironclaw-runtime.js', () => {
+  class IronclawRuntime {
+    readonly profile: string;
+
+    constructor(options: { profile?: string }) {
+      this.profile = options.profile ?? 'ironclaw';
+    }
+
+    async getVersion(): Promise<string> {
+      return 'test-version';
+    }
+
+    async probe(): Promise<{ connected: boolean; gatewayUrl: string; dashboardUrl: string; message: null }> {
+      return {
+        connected: true,
+        gatewayUrl: 'ws://127.0.0.1:19789',
+        dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+        message: null,
+      };
+    }
+
+    async reconnect(): Promise<{ connected: boolean; gatewayUrl: string; dashboardUrl: string; message: null }> {
+      return {
+        connected: true,
+        gatewayUrl: 'ws://127.0.0.1:19789',
+        dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+        message: null,
+      };
+    }
+
+    startRun() {
+      return {
+        cancel: vi.fn(),
+        done: Promise.resolve({
+          ok: true,
+          runId: 'run-default',
+          summary: 'Default summary',
+          finalText: 'Default final text',
+        }),
+      };
+    }
+  }
+
+  return { IronclawRuntime };
+});
+
 import { GranolaTaskService } from './task-service.js';
 import type { GranolaMeeting } from '../../../../packages/granola-pipeline/src/types.js';
 import type { TaskChatMessage, TaskChatTrace } from '../../src/shared/types.js';
@@ -351,6 +398,124 @@ describe('GranolaTaskService', () => {
     expect(feedAfter.todos).toHaveLength(2);
     expect(feedAfter.counts.discovered).toBe(2);
     expect(feedAfter.todos[0]?.lastUpdatedAt >= feedAfter.todos[1]?.lastUpdatedAt).toBe(true);
+
+    await secondService.dispose();
+  });
+
+  it('builds a seeded workspace snapshot from extracted tasks', async () => {
+    const dataDir = await makeTempDir();
+
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Prepare CRM comparison',
+              description: 'Compare top vendors',
+              owner: 'Motasim',
+              due_date: 'Friday',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed-workspace', [meeting('meeting-1', 'Seed note')]);
+
+    const workspace = await service.tasksGetWorkspace();
+
+    expect(workspace.sections.map((section) => section.id)).toEqual(['all', 'assigned', 'running', 'completed', 'activity']);
+    expect(workspace.lists).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'meeting:meeting-1',
+          label: 'Meeting meeting-1',
+        }),
+      ]),
+    );
+    expect(workspace.boardColumns.map((column) => column.id)).toEqual(['inbox', 'ready', 'running', 'done', 'blocked']);
+    expect(workspace.items).toHaveLength(1);
+    expect(workspace.items[0]).toMatchObject({
+      title: 'Prepare CRM comparison',
+      listId: 'meeting:meeting-1',
+      boardColumnId: 'inbox',
+      following: false,
+      assignee: {
+        label: 'Motasim',
+      },
+    });
+
+    await service.dispose();
+  });
+
+  it('persists workspace metadata and prefs across restarts', async () => {
+    const dataDir = await makeTempDir();
+
+    const firstService = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Draft launch summary',
+              description: 'Shape the final update',
+              owner: 'Motasim',
+              due_date: 'Next Monday',
+              priority: 'medium',
+            },
+          ],
+        }),
+    });
+
+    await firstService.init();
+    await firstService.runTodoExtraction('workspace-persist', [meeting('meeting-2', 'Workspace persist note')]);
+
+    const todoId = firstService.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    await firstService.tasksUpdateMetadata(String(todoId), {
+      boardColumnId: 'done',
+      following: true,
+      latestBrief: {
+        content: '## Brief\n\n- Ready to send',
+        generatedAt: '2026-03-21T19:52:00.000Z',
+        modelLabel: 'Codex / Auto',
+      },
+    });
+    await firstService.tasksUpdateWorkspacePrefs({
+      viewMode: 'kanban',
+      groupBy: 'assignee',
+      sortBy: 'priority',
+    });
+    await firstService.dispose();
+
+    const secondService = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await secondService.init();
+    const workspace = await secondService.tasksGetWorkspace();
+    const updated = workspace.items.find((item) => item.todoId === todoId);
+
+    expect(workspace.prefs).toMatchObject({
+      viewMode: 'kanban',
+      groupBy: 'assignee',
+      sortBy: 'priority',
+    });
+    expect(updated).toMatchObject({
+      boardColumnId: 'done',
+      following: true,
+      latestBrief: {
+        content: '## Brief\n\n- Ready to send',
+        modelLabel: 'Codex / Auto',
+      },
+    });
 
     await secondService.dispose();
   });

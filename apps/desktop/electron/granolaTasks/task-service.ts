@@ -19,6 +19,7 @@ import { EncryptedTokenStore } from '../../../../packages/granola-pipeline/src/t
 import { TodoStore } from '../../../../packages/granola-pipeline/src/todo-store.js';
 import { TaskChatStore, type TaskChatStoreDocument } from './chat-store.js';
 import { GranolaChatStore, type GranolaChatStoreDocument, type PersistedGranolaChatThread } from './granola-chat-store.js';
+import { TaskWorkspaceStore, type TaskWorkspaceMetadataRecord } from './task-workspace-store.js';
 import { OAuthCallbackServer } from './oauth-callback.js';
 import { IronclawRuntime, type IronclawToolPayload } from '../../../../packages/execution-ironclaw/src/ironclaw-runtime.js';
 import { migrateLegacyOpenclawData, type LegacyDataMigrationStatus } from './data-migration.js';
@@ -55,11 +56,19 @@ import type {
   TaskExecutionPhase,
   TaskExecutorConnection,
   TaskCounts,
+  TaskList,
   TaskItemPublic,
+  TaskMetadataPatch,
   TaskPlanDraft,
   TaskPlanOption,
   TaskPlanningContext,
   TaskStartOptions,
+  TaskAssignee,
+  TaskBoardColumn,
+  TaskWorkspaceItem,
+  TaskWorkspacePrefs,
+  TaskWorkspacePrefsPatch,
+  TasksWorkspace,
   TasksFeed,
   TasksRealtimeEvent,
   TasksRuntimeCheck,
@@ -190,6 +199,13 @@ interface GranolaChatRuntimeState {
   loaded: boolean;
   saveChain: Promise<void>;
   threads: Record<string, PersistedGranolaChatThread>;
+}
+
+interface TaskWorkspaceRuntimeState {
+  loaded: boolean;
+  saveChain: Promise<void>;
+  prefs: TaskWorkspacePrefs;
+  metadataByTodoId: Record<string, TaskWorkspaceMetadataRecord>;
 }
 
 interface GranolaDesktopCacheRecipeEntry {
@@ -861,6 +877,76 @@ function humanizeRecipeLabel(slug: string): string {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
+const TASK_ASSIGNEE_TONES: Array<TaskAssignee['tone']> = ['olive', 'blue', 'violet', 'amber', 'rose', 'slate'];
+const TASK_BOARD_COLUMNS: Array<{ id: string; label: string }> = [
+  { id: 'inbox', label: 'Inbox' },
+  { id: 'ready', label: 'Ready' },
+  { id: 'running', label: 'Running' },
+  { id: 'done', label: 'Done' },
+  { id: 'blocked', label: 'Blocked' },
+];
+
+function slugifyTaskToken(value: string, fallback: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function taskAssigneeIdFromOwner(owner: string | null): string | null {
+  const normalized = compactSingleLineText(owner, 120);
+  if (!normalized) {
+    return null;
+  }
+  return `assignee:${slugifyTaskToken(normalized, 'owner')}`;
+}
+
+function taskInitials(label: string): string {
+  const tokens = label
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return 'Y';
+  }
+  const initials = tokens
+    .slice(0, 2)
+    .map((token) => token[0]?.toUpperCase() ?? '')
+    .join('');
+  return initials || label.slice(0, 1).toUpperCase();
+}
+
+function taskAssigneeTone(id: string): TaskAssignee['tone'] {
+  const seed = [...id].reduce((total, char) => total + char.charCodeAt(0), 0);
+  return TASK_ASSIGNEE_TONES[seed % TASK_ASSIGNEE_TONES.length];
+}
+
+function defaultTaskListId(todo: TodoRecord): string {
+  if (todo.meetingId) {
+    return `meeting:${todo.meetingId}`;
+  }
+  return 'granola-feed';
+}
+
+function defaultBoardColumnId(todo: TodoRecord): string {
+  const runState = inferTodoRunState(todo);
+  const queueState = todo.runState === 'running' ? 'running' : null;
+  if (queueState === 'running' || runState === 'running') {
+    return 'running';
+  }
+  if (runState === 'blocked' || todo.status === 'failed') {
+    return 'blocked';
+  }
+  if (runState === 'done' || todo.status === 'submitted' || todo.status === 'cancelled') {
+    return 'done';
+  }
+  if (todo.status === 'approved' || todo.status === 'queued' || todo.status === 'submitting') {
+    return 'ready';
+  }
+  return 'inbox';
+}
+
 function formatCompactRelativeTime(value: string, nowMs = Date.now()): string {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) {
@@ -1365,6 +1451,8 @@ export class GranolaTaskService {
 
   private readonly granolaChatStore: GranolaChatStore;
 
+  private readonly workspaceStore: TaskWorkspaceStore;
+
   private readonly callbackServer: OAuthCallbackServer;
 
   private readonly guardrailMode: 'workspace_only' | 'off' = 'off';
@@ -1486,6 +1574,17 @@ export class GranolaTaskService {
     threads: {},
   };
 
+  private workspaceState: TaskWorkspaceRuntimeState = {
+    loaded: false,
+    saveChain: Promise.resolve(),
+    prefs: {
+      viewMode: 'list',
+      groupBy: 'board',
+      sortBy: 'updated',
+    },
+    metadataByTodoId: {},
+  };
+
   private granolaDesktopChatCatalog: GranolaDesktopChatCatalog | null = null;
 
   private lastFeedBroadcastAt = 0;
@@ -1534,6 +1633,7 @@ export class GranolaTaskService {
     this.todoStore = new TodoStore(path.join(options.dataDir, 'todo-store.json'));
     this.chatStore = new TaskChatStore(path.join(options.dataDir, 'task-chat-store.json'));
     this.granolaChatStore = new GranolaChatStore(path.join(options.dataDir, 'granola-chat-store.json'));
+    this.workspaceStore = new TaskWorkspaceStore(path.join(options.dataDir, 'task-workspace-store.json'));
 
     this.callbackServer = new OAuthCallbackServer({
       host: options.callbackHost ?? '127.0.0.1',
@@ -2158,6 +2258,39 @@ export class GranolaTaskService {
     return next;
   }
 
+  private async loadPersistedWorkspaceState(): Promise<void> {
+    const persisted = await this.workspaceStore.load();
+    this.workspaceState.loaded = true;
+    this.workspaceState.prefs = persisted.prefs;
+    this.workspaceState.metadataByTodoId = persisted.metadataByTodoId ?? {};
+  }
+
+  private async persistWorkspaceState(): Promise<void> {
+    if (!this.workspaceState.loaded) {
+      return;
+    }
+    await this.workspaceStore.save({
+      version: 1,
+      prefs: this.workspaceState.prefs,
+      metadataByTodoId: this.workspaceState.metadataByTodoId,
+    });
+  }
+
+  private async withWorkspaceStateWrite<T>(mutator: () => Promise<T>): Promise<T> {
+    const run = async (): Promise<T> => {
+      const output = await mutator();
+      await this.persistWorkspaceState();
+      return output;
+    };
+
+    const next = this.workspaceState.saveChain.then(run, run);
+    this.workspaceState.saveChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   private queueChatPersist(immediate = false): void {
     const flush = () => {
       void this.withChatStateWrite(async () => undefined);
@@ -2560,6 +2693,181 @@ export class GranolaTaskService {
     };
   }
 
+  private workspaceAssigneeDirectory(todos: TodoRecord[]): Map<string, TaskAssignee> {
+    const directory = new Map<string, TaskAssignee>();
+    for (const todo of todos) {
+      const label = compactSingleLineText(todo.owner, 120);
+      const id = taskAssigneeIdFromOwner(todo.owner);
+      if (!label || !id || directory.has(id)) {
+        continue;
+      }
+      directory.set(id, {
+        id,
+        label,
+        initials: taskInitials(label),
+        tone: taskAssigneeTone(id),
+      });
+    }
+    return directory;
+  }
+
+  private todoWorkspaceView(todo: TodoRecord, assigneeDirectory: Map<string, TaskAssignee>): TaskWorkspaceItem {
+    const publicView = this.todoPublicView(todo);
+    const metadata = this.workspaceState.metadataByTodoId[todo.todoId] ?? null;
+    const defaultAssigneeId = taskAssigneeIdFromOwner(todo.owner);
+    const assigneeId = metadata?.assigneeId ?? defaultAssigneeId;
+    const ownerLabel = compactSingleLineText(todo.owner, 120);
+
+    const assignee =
+      (assigneeId ? assigneeDirectory.get(assigneeId) ?? null : null) ??
+      (assigneeId && ownerLabel
+        ? {
+            id: assigneeId,
+            label: ownerLabel,
+            initials: taskInitials(ownerLabel),
+            tone: taskAssigneeTone(assigneeId),
+          }
+        : null);
+
+    return {
+      ...publicView,
+      createdAt: todo.createdAt,
+      creatorLabel: 'Granola',
+      assignee,
+      listId: metadata?.listId ?? defaultTaskListId(todo),
+      boardColumnId: metadata?.boardColumnId ?? defaultBoardColumnId(todo),
+      following: metadata?.following === true,
+      latestBrief: metadata?.latestBrief ?? null,
+    };
+  }
+
+  private sortWorkspaceItems(items: TaskWorkspaceItem[], prefs: TaskWorkspacePrefs): TaskWorkspaceItem[] {
+    const priorityRank: Record<TaskWorkspaceItem['priority'], number> = {
+      urgent: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
+    return [...items].sort((left, right) => {
+      if (prefs.sortBy === 'title') {
+        return left.title.localeCompare(right.title);
+      }
+      if (prefs.sortBy === 'priority') {
+        const delta = priorityRank[right.priority] - priorityRank[left.priority];
+        if (delta !== 0) {
+          return delta;
+        }
+      }
+      if (prefs.sortBy === 'due') {
+        const leftDue = parseDateForSort(left.dueDate);
+        const rightDue = parseDateForSort(right.dueDate);
+        if (leftDue !== rightDue) {
+          return leftDue - rightDue;
+        }
+      }
+      const leftTime = parseDateForSort(prefs.sortBy === 'created' ? left.createdAt : left.lastUpdatedAt);
+      const rightTime = parseDateForSort(prefs.sortBy === 'created' ? right.createdAt : right.lastUpdatedAt);
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+      return left.todoId.localeCompare(right.todoId);
+    });
+  }
+
+  private buildWorkspaceLists(items: TaskWorkspaceItem[]): TaskList[] {
+    const map = new Map<string, TaskList>([
+      ['granola-feed', { id: 'granola-feed', label: 'Granola feed', itemCount: 0, kind: 'inbox' }],
+    ]);
+    for (const item of items) {
+      if (!map.has(item.listId)) {
+        const derived: TaskList =
+          item.listId === 'granola-feed'
+            ? { id: 'granola-feed', label: 'Granola feed', itemCount: 0, kind: 'inbox' }
+            : item.listId.startsWith('meeting:')
+              ? {
+                  id: item.listId,
+                  label: compactSingleLineText(item.meetingTitle, 60) || 'Meeting tasks',
+                  itemCount: 0,
+                  kind: 'meeting',
+                }
+              : {
+                  id: item.listId,
+                  label: humanizeRecipeLabel(item.listId.replace(/^.*:/, '')),
+                  itemCount: 0,
+                  kind: 'project',
+                };
+        map.set(item.listId, derived);
+      }
+      const current = map.get(item.listId);
+      if (current) {
+        current.itemCount += 1;
+      }
+    }
+    return [...map.values()].sort((left, right) => right.itemCount - left.itemCount || left.label.localeCompare(right.label));
+  }
+
+  private buildWorkspaceColumns(items: TaskWorkspaceItem[]): TaskBoardColumn[] {
+    return TASK_BOARD_COLUMNS.map((column) => ({
+      id: column.id,
+      label: column.label,
+      itemCount: items.filter((item) => item.boardColumnId === column.id).length,
+    }));
+  }
+
+  private buildWorkspaceSections(items: TaskWorkspaceItem[]) {
+    const recentCutoff = Date.now() - 72 * 60 * 60 * 1000;
+    return [
+      {
+        id: 'all' as const,
+        label: 'All',
+        description: 'Every extracted task',
+        itemCount: items.length,
+      },
+      {
+        id: 'assigned' as const,
+        label: 'Assigned',
+        description: 'Tasks with an owner',
+        itemCount: items.filter((item) => Boolean(item.assignee)).length,
+      },
+      {
+        id: 'running' as const,
+        label: 'Running',
+        description: 'Tasks with active execution',
+        itemCount: items.filter((item) => item.runQueueState === 'running' || item.runQueueState === 'queued').length,
+      },
+      {
+        id: 'completed' as const,
+        label: 'Completed',
+        description: 'Completed execution history',
+        itemCount: items.filter((item) => item.boardColumnId === 'done').length,
+      },
+      {
+        id: 'activity' as const,
+        label: 'Activity',
+        description: 'Recent task movement',
+        itemCount: items.filter((item) => parseDateForSort(item.lastUpdatedAt) >= recentCutoff || item.attempts > 0).length,
+      },
+    ];
+  }
+
+  private buildWorkspaceSnapshot(): TasksWorkspace {
+    const todos = this.sortedTodos();
+    const assigneeDirectory = this.workspaceAssigneeDirectory(todos);
+    const items = this.sortWorkspaceItems(
+      todos.map((todo) => this.todoWorkspaceView(todo, assigneeDirectory)),
+      this.workspaceState.prefs,
+    );
+    return {
+      sections: this.buildWorkspaceSections(items),
+      lists: this.buildWorkspaceLists(items),
+      boardColumns: this.buildWorkspaceColumns(items),
+      assignees: [...assigneeDirectory.values()].sort((left, right) => left.label.localeCompare(right.label)),
+      prefs: this.workspaceState.prefs,
+      items,
+      selectedTodoIdHint: this.activeExecutionTodoId ?? items[0]?.todoId ?? null,
+    };
+  }
+
   private createOAuthProvider(redirectUrl: string, onRedirect?: (url: string) => void): unknown {
     return {
       get redirectUrl() {
@@ -2881,6 +3189,7 @@ export class GranolaTaskService {
     await this.loadPersistedTodoState();
     await this.loadPersistedChatState();
     await this.loadPersistedGranolaChatState();
+    await this.loadPersistedWorkspaceState();
     await this.ensureLegacyGatewayLaunchAgentDisabledOnce();
     await this.ensureThreadsFromTodos();
     await this.recoverInterruptedExecutions();
@@ -2933,6 +3242,7 @@ export class GranolaTaskService {
       this.chatPersistTimer = null;
     }
     await this.persistChatState();
+    await this.persistWorkspaceState();
 
     await this.callbackServer.close();
     this.oauthRedirectUrl = null;
@@ -4949,6 +5259,53 @@ export class GranolaTaskService {
         markerPath: this.migrationStatus.markerPath,
       },
     };
+  }
+
+  async tasksGetWorkspace(): Promise<TasksWorkspace> {
+    return this.buildWorkspaceSnapshot();
+  }
+
+  async tasksUpdateMetadata(todoId: string, patch: TaskMetadataPatch): Promise<TaskWorkspaceItem> {
+    const todo = this.findTodo(todoId);
+    if (!todo) {
+      throw new Error(`Task not found: ${todoId}`);
+    }
+
+    await this.withWorkspaceStateWrite(async () => {
+      const current = this.workspaceState.metadataByTodoId[todoId] ?? null;
+      this.workspaceState.metadataByTodoId[todoId] = this.workspaceStore.mergeMetadata(current, patch);
+    });
+
+    this.emitFeedUpdated(true);
+    const assigneeDirectory = this.workspaceAssigneeDirectory(this.todoState.todos);
+    return this.todoWorkspaceView(todo, assigneeDirectory);
+  }
+
+  async tasksUpdateWorkspacePrefs(patch: TaskWorkspacePrefsPatch): Promise<TaskWorkspacePrefs> {
+    await this.withWorkspaceStateWrite(async () => {
+      this.workspaceState.prefs = {
+        viewMode: patch.viewMode === 'kanban' || patch.viewMode === 'list' ? patch.viewMode : this.workspaceState.prefs.viewMode,
+        groupBy:
+          patch.groupBy === 'board' ||
+          patch.groupBy === 'meeting' ||
+          patch.groupBy === 'assignee' ||
+          patch.groupBy === 'priority' ||
+          patch.groupBy === 'status'
+            ? patch.groupBy
+            : this.workspaceState.prefs.groupBy,
+        sortBy:
+          patch.sortBy === 'updated' ||
+          patch.sortBy === 'created' ||
+          patch.sortBy === 'priority' ||
+          patch.sortBy === 'title' ||
+          patch.sortBy === 'due'
+            ? patch.sortBy
+            : this.workspaceState.prefs.sortBy,
+      };
+    });
+
+    this.emitFeedUpdated(true);
+    return this.workspaceState.prefs;
   }
 
   private currentGranolaChatThreads(): PersistedGranolaChatThread[] {

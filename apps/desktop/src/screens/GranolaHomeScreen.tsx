@@ -32,7 +32,10 @@ import {
 } from '../design-system/icons';
 import { granolaClient } from '../lib/granolaClient';
 import DocsWorkspace from './DocsWorkspace';
+import TasksWorkspaceScreen from './TasksWorkspace';
+import AISettingsScreen from './AISettingsScreen';
 import type {
+  CodexAIStatus,
   GranolaChatHome,
   GranolaChatRecipe,
   GranolaChatThread,
@@ -41,18 +44,16 @@ import type {
   HomeRecentNote,
   HomeUpcomingMeeting,
   TaskChatMessage,
-  TaskChatTrace,
-  TaskItemPublic,
   TaskPlanDraft,
   TaskPlanningContext,
   TaskStartOptions,
   TasksFeed,
   TasksRealtimeEvent,
+  TasksWorkspace,
 } from '../shared/types';
 import { MarkdownMessage } from '../components/MarkdownMessage';
 
-type MainTab = 'home' | 'shared' | 'chat' | 'docs' | 'tasks';
-type TasksViewMode = 'list' | 'chat';
+type MainTab = 'home' | 'shared' | 'chat' | 'docs' | 'tasks' | 'ai';
 const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
 
 const HOME_UPCOMING_FALLBACK: HomeUpcomingMeeting = {
@@ -109,18 +110,6 @@ function writeDismissedWarningKeys(values: Set<string>): void {
   }
 }
 
-function formatDate(value: string | null): string {
-  if (!value) {
-    return 'Never';
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) {
-    return value;
-  }
-  return date.toLocaleString();
-}
-
 function formatClock(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) {
@@ -148,57 +137,6 @@ function isPendingAuthorizationFresh(feed: TasksFeed | null): boolean {
     return false;
   }
   return expiresAt > Date.now();
-}
-
-function priorityLabel(priority: TaskItemPublic['priority']): string {
-  switch (priority) {
-    case 'urgent':
-      return 'Urgent';
-    case 'high':
-      return 'High';
-    case 'low':
-      return 'Low';
-    default:
-      return 'Medium';
-  }
-}
-
-function statusLabel(status: TaskItemPublic['status']): string {
-  return status.replace('_', ' ');
-}
-
-function runQueueLabel(task: TaskItemPublic): string {
-  if (task.runQueueState === 'running' || task.runState === 'running') {
-    return 'Running';
-  }
-  if (task.runQueueState === 'queued') {
-    return 'Queued';
-  }
-  return 'Idle';
-}
-
-function syncHealthLabel(feed: TasksFeed | null): string {
-  if (!feed) {
-    return 'Healthy';
-  }
-  if (feed.syncHealth === 'cooldown') {
-    return `Cooling down until ${formatDate(feed.cooldownUntil)}`;
-  }
-  if (feed.syncHealth === 'degraded') {
-    return 'Degraded';
-  }
-  return 'Healthy';
-}
-
-function normalizeTask(task: TaskItemPublic): TaskItemPublic {
-  const queueState =
-    task.runQueueState === 'queued' || task.runQueueState === 'running' || task.runQueueState === 'idle'
-      ? task.runQueueState
-      : 'idle';
-  return {
-    ...task,
-    runQueueState: queueState,
-  };
 }
 
 function mergeMessageList(previous: TaskChatMessage[], incoming: TaskChatMessage[]): TaskChatMessage[] {
@@ -256,236 +194,6 @@ function applyRealtimeEventToMessages(messages: TaskChatMessage[], event: TasksR
   return mergeMessageList([], next);
 }
 
-type ChatRenderBlock =
-  | { kind: 'trace-group'; key: string; messages: TaskChatMessage[] }
-  | { kind: 'message'; key: string; message: TaskChatMessage };
-
-type SourceRow = {
-  key: string;
-  domain: string;
-  url: string;
-};
-
-function buildChatRenderBlocks(messages: TaskChatMessage[]): ChatRenderBlock[] {
-  const blocks: ChatRenderBlock[] = [];
-  let pendingTraceMessages: TaskChatMessage[] = [];
-  let pendingGroupKey: string | null = null;
-
-  const flushTrace = () => {
-    if (pendingTraceMessages.length === 0) {
-      return;
-    }
-    blocks.push({
-      kind: 'trace-group',
-      key: pendingGroupKey || `trace-${pendingTraceMessages[0]?.messageId ?? blocks.length}`,
-      messages: pendingTraceMessages,
-    });
-    pendingTraceMessages = [];
-    pendingGroupKey = null;
-  };
-
-  for (const message of messages) {
-    if (!message.trace) {
-      flushTrace();
-      blocks.push({
-        kind: 'message',
-        key: message.messageId,
-        message,
-      });
-      continue;
-    }
-
-    const groupKey = message.runId || message.trace.groupId || 'trace-unknown';
-    if (pendingTraceMessages.length > 0 && pendingGroupKey !== groupKey) {
-      flushTrace();
-    }
-    pendingGroupKey = groupKey;
-    pendingTraceMessages.push(message);
-  }
-  flushTrace();
-  return blocks;
-}
-
-function traceDetailRows(trace: TaskChatTrace): Array<{ key: string; value: string }> {
-  const rows: Array<{ key: string; value: string }> = [];
-  if (trace.detail && trace.detail.trim()) {
-    rows.push({ key: 'detail', value: trace.detail.trim() });
-  }
-  if (trace.toolArgs && trace.toolArgs.trim()) {
-    rows.push({ key: 'toolArgs', value: trace.toolArgs.trim() });
-  }
-  if (trace.toolMeta && trace.toolMeta.trim()) {
-    rows.push({ key: 'toolMeta', value: trace.toolMeta.trim() });
-  }
-  return rows;
-}
-
-function collectSourceRows(messages: TaskChatMessage[]): SourceRow[] {
-  const map = new Map<string, SourceRow>();
-  for (const message of messages) {
-    const trace = message.trace;
-    if (!trace || trace.kind !== 'source_fetch') {
-      continue;
-    }
-    const url = (trace.sourceUrl || trace.detail || '').trim();
-    if (!url || map.has(url)) {
-      continue;
-    }
-    map.set(url, {
-      key: `${message.messageId}-${url}`,
-      domain: (trace.domain || 'source').trim(),
-      url,
-    });
-  }
-  return [...map.values()];
-}
-
-function traceRowSymbol(trace: TaskChatTrace): string {
-  if (trace.kind === 'thought') {
-    return '•';
-  }
-  if (trace.kind === 'phase') {
-    return '◉';
-  }
-  if (trace.kind === 'source_fetch') {
-    return '◌';
-  }
-  if (trace.kind === 'tool_result' && trace.isError) {
-    return '×';
-  }
-  return '○';
-}
-
-function RunTraceGroup({
-  messages,
-  expandedRows,
-  onToggleRow,
-}: {
-  messages: TaskChatMessage[];
-  expandedRows: Set<string>;
-  onToggleRow: (messageId: string) => void;
-}) {
-  const thoughtRows = messages.filter((item) => item.trace?.kind === 'thought');
-  const actionRows = messages.filter((item) => {
-    const kind = item.trace?.kind;
-    return kind === 'phase' || kind === 'tool_start' || kind === 'tool_result';
-  });
-  const sourceRows = collectSourceRows(messages);
-
-  const renderRows = (rows: TaskChatMessage[]) =>
-    rows.map((message) => {
-      const trace = message.trace;
-      if (!trace) {
-        return null;
-      }
-      const details = traceDetailRows(trace);
-      const isExpanded = expandedRows.has(message.messageId);
-      const showToggle = details.length > 0;
-      return (
-        <div key={message.messageId} className={cx('run-trace__row', trace.isError && 'is-error')}>
-          <span className="run-trace__icon" aria-hidden="true">
-            {traceRowSymbol(trace)}
-          </span>
-          <div>
-            <div className="run-trace__title">
-              <span>{trace.title}</span>
-              <span>{formatClock(message.createdAt)}</span>
-            </div>
-            {showToggle ? (
-              <button
-                type="button"
-                className="run-trace__toggle"
-                onClick={() => {
-                  onToggleRow(message.messageId);
-                }}
-              >
-                {isExpanded ? 'Hide details' : 'Show details'}
-              </button>
-            ) : null}
-            {showToggle && isExpanded ? (
-              <div className="run-trace__details">
-                {details.map((detail) => (
-                  <pre key={`${message.messageId}-${detail.key}`}>{detail.value}</pre>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      );
-    });
-
-  return (
-    <article className="run-trace">
-      <div className="run-trace__rail" aria-hidden="true" />
-      <div>
-        {thoughtRows.length > 0 ? (
-          <section className="run-trace__section">
-            <h3>Thought</h3>
-            {renderRows(thoughtRows)}
-          </section>
-        ) : null}
-
-        {actionRows.length > 0 ? (
-          <section className="run-trace__section">
-            <h3>Actions</h3>
-            {renderRows(actionRows)}
-          </section>
-        ) : null}
-
-        {sourceRows.length > 0 ? (
-          <section className="run-trace__section">
-            <h3>Sources</h3>
-            <div className="run-sources-card">
-              <p>Fetched {sourceRows.length} source{sourceRows.length === 1 ? '' : 's'}</p>
-              {sourceRows.map((source) => (
-                <div key={source.key} className="run-sources-card__row">
-                  <span className="run-sources-card__domain">{source.domain}</span>
-                  <a className="run-sources-card__url" href={source.url} target="_blank" rel="noreferrer">
-                    {source.url}
-                  </a>
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
-      </div>
-    </article>
-  );
-}
-
-function ChatBubble({ message }: { message: TaskChatMessage }) {
-  const roleLabel =
-    message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : message.role === 'status' ? 'Status' : 'System';
-
-  if (message.role === 'assistant' && !message.streaming && message.messageType !== 'planning_draft') {
-    return (
-      <article className="run-final-answer">
-        <header>
-          <span>Final result</span>
-          <span>{formatClock(message.createdAt)}</span>
-        </header>
-        <MarkdownMessage content={message.content || '...'} />
-      </article>
-    );
-  }
-
-  return (
-    <article className={cx('copilot-chat-bubble', `is-${message.role}`, message.streaming && 'is-streaming')}>
-      <header className="copilot-chat-bubble__header">
-        <span>{roleLabel}</span>
-        <span>{formatClock(message.createdAt)}</span>
-      </header>
-      <div className="copilot-chat-bubble__content">
-        {message.role === 'assistant' || message.role === 'system' ? (
-          <MarkdownMessage content={message.content || '...'} />
-        ) : (
-          <p>{message.content || '...'}</p>
-        )}
-      </div>
-    </article>
-  );
-}
-
 function latestPlanDraftFromMessages(messages: TaskChatMessage[]): TaskPlanDraft | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -494,212 +202,6 @@ function latestPlanDraftFromMessages(messages: TaskChatMessage[]): TaskPlanDraft
     }
   }
   return null;
-}
-
-function TaskPlanningPanel({
-  context,
-  contextLoading,
-  draft,
-  isPlanning,
-  planningInput,
-  onPlanningInputChange,
-  onGenerate,
-  selectedMode,
-  selectedOptionId,
-  onSelectOption,
-  customInstruction,
-  onCustomInstructionChange,
-}: {
-  context: TaskPlanningContext | null;
-  contextLoading: boolean;
-  draft: TaskPlanDraft | null;
-  isPlanning: boolean;
-  planningInput: string;
-  onPlanningInputChange: (value: string) => void;
-  onGenerate: () => void;
-  selectedMode: 'preset' | 'custom' | null;
-  selectedOptionId: string | null;
-  onSelectOption: (mode: 'preset' | 'custom', optionId?: string) => void;
-  customInstruction: string;
-  onCustomInstructionChange: (value: string) => void;
-}) {
-  return (
-    <section className="task-planning-panel" aria-label="Task planning panel">
-      <header className="task-planning-panel__header">
-        <h3>Plan before launch</h3>
-        <p>Choose one AI plan, or use Custom, then start execution.</p>
-      </header>
-
-      <div className="task-planning-context">
-        {contextLoading ? <p className="copilot-empty">Loading planning context...</p> : null}
-        {!contextLoading && !context ? <p className="copilot-empty">Planning context unavailable.</p> : null}
-        {context?.sections.map((section) => (
-          <article key={section.id} className="task-planning-context__card">
-            <h4>{section.title}</h4>
-            <ul>
-              {section.bullets.map((bullet, index) => (
-                <li key={`${section.id}-${index}`}>{bullet}</li>
-              ))}
-            </ul>
-          </article>
-        ))}
-      </div>
-
-      <div className="task-planning-controls">
-        <textarea
-          value={planningInput}
-          onChange={(event) => {
-            onPlanningInputChange(event.target.value);
-          }}
-          placeholder="Anything specific about how this should be planned?"
-          disabled={isPlanning}
-        />
-        <button type="button" className="copilot-secondary-button" onClick={onGenerate} disabled={isPlanning}>
-          {isPlanning ? 'Planning...' : draft ? 'Regenerate options' : 'Plan task'}
-        </button>
-      </div>
-
-      <div className="task-plan-options">
-        {draft?.options.map((option, index) => {
-          const selected = selectedMode === 'preset' && selectedOptionId === option.id;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              className={cx('task-plan-option', selected && 'is-selected', option.recommended && 'is-recommended')}
-              onClick={() => {
-                onSelectOption('preset', option.id);
-              }}
-            >
-              <div className="task-plan-option__title-row">
-                <strong>
-                  {index + 1}. {option.title}
-                </strong>
-                {option.recommended ? <span className="task-plan-option__badge">Recommended</span> : null}
-              </div>
-              <p>{option.summary}</p>
-              <small>{option.why}</small>
-              <ul>
-                {option.steps.map((step, stepIndex) => (
-                  <li key={`${option.id}-step-${stepIndex}`}>{step}</li>
-                ))}
-              </ul>
-            </button>
-          );
-        })}
-
-        <div className={cx('task-plan-option', 'is-custom', selectedMode === 'custom' && 'is-selected')}>
-          <button
-            type="button"
-            className="task-plan-option__select"
-            onClick={() => {
-              onSelectOption('custom');
-            }}
-          >
-            Custom
-          </button>
-          <p>Anything else on how we should plan this?</p>
-          <textarea
-            value={customInstruction}
-            onFocus={() => {
-              onSelectOption('custom');
-            }}
-            onChange={(event) => {
-              onCustomInstructionChange(event.target.value);
-            }}
-            placeholder="Type extra planning instructions..."
-          />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function TaskListRow({
-  task,
-  selected,
-  onSelect,
-  onOpenChat,
-  onStart,
-  isStarting,
-}: {
-  task: TaskItemPublic;
-  selected: boolean;
-  onSelect: () => void;
-  onOpenChat: () => void;
-  onStart: () => void;
-  isStarting: boolean;
-}) {
-  const title = task.title.trim() || task.description.trim() || task.meetingTitle || 'Untitled task';
-  const subtitle = task.meetingTitle || task.description || 'No context';
-  const running = task.runState === 'running' || task.runQueueState === 'running';
-
-  return (
-    <article className={cx('copilot-task-row', selected && 'is-selected')}>
-      <div
-        className="copilot-task-row__main"
-        role="button"
-        tabIndex={0}
-        onClick={onSelect}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onSelect();
-          }
-        }}
-      >
-        <div className="copilot-task-row__copy">
-          <p className="copilot-task-row__title">{title}</p>
-          <p className="copilot-task-row__subtitle">{subtitle}</p>
-        </div>
-        <div className="copilot-task-row__meta">
-          <span className={cx('copilot-chip', `is-status-${task.status}`)}>{statusLabel(task.status)}</span>
-          <span className={cx('copilot-chip', `is-queue-${task.runQueueState}`)}>{runQueueLabel(task)}</span>
-          <span className="copilot-chip">{priorityLabel(task.priority)}</span>
-        </div>
-      </div>
-      <div className="copilot-task-row__actions">
-        <button type="button" className="copilot-secondary-button" onClick={onOpenChat}>
-          Open Chat
-        </button>
-        <button
-          type="button"
-          className="copilot-primary-button"
-          onClick={onStart}
-          disabled={isStarting || running}
-        >
-          {isStarting || running ? 'Running...' : 'Start Task'}
-        </button>
-      </div>
-    </article>
-  );
-}
-
-type CopilotWarningProps = {
-  summary: string;
-  details: string[];
-  listKeyPrefix: string;
-  onHide: () => void;
-};
-
-function CopilotWarning({ summary, details, listKeyPrefix, onHide }: CopilotWarningProps) {
-  return (
-    <div className="copilot-warning">
-      <div className="copilot-warning__top">
-        <p>{summary}</p>
-        <button type="button" className="copilot-warning__hide" onClick={onHide}>
-          Hide
-        </button>
-      </div>
-      {details.length > 0 ? (
-        <ul>
-          {details.slice(0, 3).map((item, index) => (
-            <li key={`${listKeyPrefix}-${index}`}>{item}</li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
 }
 
 function HomePlaceholder({ title, copy }: { title: string; copy: string }) {
@@ -719,15 +221,17 @@ function GlobalSidebar({
   sidebarActionLabel,
   sidebarActionDisabled,
   onSidebarAction,
+  compactWorkspace,
 }: {
   activeTab: MainTab;
   onSelectTab: (tab: MainTab) => void;
   sidebarActionLabel: string;
   sidebarActionDisabled: boolean;
   onSidebarAction: () => void;
+  compactWorkspace?: boolean;
 }) {
   return (
-    <aside className="granola-sidebar">
+    <aside className={cx('granola-sidebar', compactWorkspace && 'is-compact-workspace')}>
       <div className="sidebar-top" />
 
       <div className="sidebar-search-stack">
@@ -747,6 +251,7 @@ function GlobalSidebar({
         <SidebarItem icon={<ChatIcon className="glyph-16" />} label="Chat" active={activeTab === 'chat'} onClick={() => onSelectTab('chat')} />
         <SidebarItem icon={<FolderIcon className="glyph-16" />} label="Docs" active={activeTab === 'docs'} onClick={() => onSelectTab('docs')} />
         <SidebarItem icon={<FileIcon className="glyph-16" />} label="Tasks" active={activeTab === 'tasks'} onClick={() => onSelectTab('tasks')} />
+        <SidebarItem icon={<SparkleIcon className="glyph-16" />} label="AI" active={activeTab === 'ai'} onClick={() => onSelectTab('ai')} />
       </nav>
 
       <section className="sidebar-spaces" aria-label="Spaces">
@@ -2120,8 +1625,8 @@ function GranolaChatPane({
 
 export default function GranolaHomeScreen() {
   const [activeTab, setActiveTab] = useState<MainTab>('home');
-  const [tasksViewMode, setTasksViewMode] = useState<TasksViewMode>('list');
   const [tasksFeed, setTasksFeed] = useState<TasksFeed | null>(null);
+  const [tasksWorkspace, setTasksWorkspace] = useState<TasksWorkspace | null>(null);
   const [tasksError, setTasksError] = useState<string | null>(null);
   const [homeFeed, setHomeFeed] = useState<HomeFeed | null>(null);
   const [homeError, setHomeError] = useState<string | null>(null);
@@ -2165,18 +1670,24 @@ export default function GranolaHomeScreen() {
   const [selectedPlanMode, setSelectedPlanMode] = useState<'preset' | 'custom' | null>(null);
   const [selectedPlanOptionId, setSelectedPlanOptionId] = useState<string | null>(null);
   const [customPlanInstruction, setCustomPlanInstruction] = useState('');
-  const [expandedTraceRows, setExpandedTraceRows] = useState<Set<string>>(() => new Set());
+  const [aiStatus, setAIStatus] = useState<CodexAIStatus | null>(null);
+  const [aiError, setAIError] = useState<string | null>(null);
+  const [isAIConnecting, setIsAIConnecting] = useState(false);
+  const [isAIDisconnecting, setIsAIDisconnecting] = useState(false);
+  const [isSummarizingTask, setIsSummarizingTask] = useState(false);
   const [dismissedWarningKeys, setDismissedWarningKeys] = useState<Set<string>>(() => new Set(readDismissedWarningKeys()));
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
 
   const isElectronRuntime = typeof window !== 'undefined' && Boolean(window.granola);
-  const tasks = useMemo(() => (tasksFeed?.todos ?? []).map(normalizeTask), [tasksFeed]);
-  const selectedTask = useMemo(() => tasks.find((item) => item.todoId === selectedTodoId) ?? null, [tasks, selectedTodoId]);
+  const workspaceTasks = useMemo(() => tasksWorkspace?.items ?? [], [tasksWorkspace]);
+  const selectedTask = useMemo(
+    () => workspaceTasks.find((item) => item.todoId === selectedTodoId) ?? null,
+    [selectedTodoId, workspaceTasks],
+  );
   const activeRunTodoId = tasksFeed?.activeRunTodoId ?? null;
   const selectedRunActive = Boolean(selectedTodoId && activeRunTodoId === selectedTodoId);
-  const chatRenderBlocks = useMemo(() => buildChatRenderBlocks(threadMessages), [threadMessages]);
   const latestPlanDraft = useMemo(() => latestPlanDraftFromMessages(threadMessages), [threadMessages]);
   const hasNonPlanningThreadMessages = useMemo(
     () => threadMessages.some((message) => (message.messageType ?? 'default') === 'default'),
@@ -2249,7 +1760,10 @@ export default function GranolaHomeScreen() {
 
   const showTasksTab = useCallback(() => {
     setActiveTab('tasks');
-    setTasksViewMode('list');
+  }, []);
+
+  const showAITab = useCallback(() => {
+    setActiveTab('ai');
   }, []);
 
   const showPrimaryTab = useCallback(
@@ -2270,9 +1784,12 @@ export default function GranolaHomeScreen() {
         case 'tasks':
           showTasksTab();
           break;
+        case 'ai':
+          showAITab();
+          break;
       }
     },
-    [showChatTab, showDocsTab, showHomeTab, showSharedTab, showTasksTab],
+    [showAITab, showChatTab, showDocsTab, showHomeTab, showSharedTab, showTasksTab],
   );
 
   const closeHomeNote = useCallback(() => {
@@ -2280,18 +1797,6 @@ export default function GranolaHomeScreen() {
     setHomeDetail(null);
     setHomeDetailError(null);
     setHomeDetailLoading(false);
-  }, []);
-
-  const toggleTraceRow = useCallback((messageId: string) => {
-    setExpandedTraceRows((current) => {
-      const next = new Set(current);
-      if (next.has(messageId)) {
-        next.delete(messageId);
-      } else {
-        next.add(messageId);
-      }
-      return next;
-    });
   }, []);
 
   const handleHideWarning = useCallback(() => {
@@ -2308,10 +1813,6 @@ export default function GranolaHomeScreen() {
       return next;
     });
   }, [activeWarningKey]);
-
-  useEffect(() => {
-    setExpandedTraceRows(new Set());
-  }, [selectedTodoId]);
 
   const scrollMessagesToBottom = useCallback((smooth = false) => {
     const element = messagesViewportRef.current;
@@ -2330,22 +1831,39 @@ export default function GranolaHomeScreen() {
 
   const fetchTasksFeed = useCallback(async (): Promise<TasksFeed | null> => {
     try {
-      const next = await granolaClient.tasksGetFeed();
+      const [next, nextWorkspace] = await Promise.all([
+        granolaClient.tasksGetFeed(),
+        granolaClient.tasksGetWorkspace(),
+      ]);
       setTasksFeed(next);
+      setTasksWorkspace(nextWorkspace);
       setTasksError(null);
 
       setSelectedTodoId((current) => {
         if (current && next.todos.some((todo) => todo.todoId === current)) {
           return current;
         }
-        if (next.selectedTodoIdHint && next.todos.some((todo) => todo.todoId === next.selectedTodoIdHint)) {
-          return next.selectedTodoIdHint;
+        const hintedTodoId = nextWorkspace.selectedTodoIdHint ?? next.selectedTodoIdHint;
+        if (hintedTodoId && next.todos.some((todo) => todo.todoId === hintedTodoId)) {
+          return hintedTodoId;
         }
         return next.todos[0]?.todoId ?? null;
       });
       return next;
     } catch (error) {
       setTasksError(error instanceof Error ? error.message : 'Unable to load tasks feed.');
+      return null;
+    }
+  }, []);
+
+  const fetchAIStatus = useCallback(async (): Promise<CodexAIStatus | null> => {
+    try {
+      const next = await granolaClient.aiGetStatus();
+      setAIStatus(next);
+      setAIError(null);
+      return next;
+    } catch (error) {
+      setAIError(error instanceof Error ? error.message : 'Unable to inspect Codex AI.');
       return null;
     }
   }, []);
@@ -2469,7 +1987,6 @@ export default function GranolaHomeScreen() {
   const openTaskChat = useCallback(
     async (todoId: string) => {
       setSelectedTodoId(todoId);
-      setTasksViewMode('chat');
       setLiveStatus(null);
       setPlanningInput('');
       setCustomPlanInstruction('');
@@ -2504,15 +2021,16 @@ export default function GranolaHomeScreen() {
     void fetchTasksFeed();
     void fetchHomeFeed();
     void fetchChatHome();
-  }, [fetchChatHome, fetchHomeFeed, fetchTasksFeed]);
+    void fetchAIStatus();
+  }, [fetchAIStatus, fetchChatHome, fetchHomeFeed, fetchTasksFeed]);
 
   useEffect(() => {
-    if (!selectedTodoId || tasksViewMode !== 'chat') {
+    if (!selectedTodoId || activeTab !== 'tasks') {
       return;
     }
     void fetchThread(selectedTodoId, null, false);
     void fetchPlanningContext(selectedTodoId);
-  }, [fetchPlanningContext, fetchThread, selectedTodoId, tasksViewMode]);
+  }, [activeTab, fetchPlanningContext, fetchThread, selectedTodoId]);
 
   useEffect(() => {
     if (latestPlanDraft) {
@@ -2557,6 +2075,13 @@ export default function GranolaHomeScreen() {
     setSelectedPlanMode('preset');
     setSelectedPlanOptionId(planningDraft.recommendedOptionId);
   }, [planningDraft, selectedPlanMode, selectedPlanOptionId]);
+
+  useEffect(() => {
+    if (activeTab !== 'tasks' && activeTab !== 'ai') {
+      return;
+    }
+    void fetchAIStatus();
+  }, [activeTab, fetchAIStatus]);
 
   useEffect(() => {
     const unsubscribe = granolaClient.tasksSubscribe((event) => {
@@ -2613,11 +2138,11 @@ export default function GranolaHomeScreen() {
   }, [activeTab, fetchTasksFeed]);
 
   useEffect(() => {
-    if (tasksViewMode !== 'chat') {
+    if (activeTab !== 'tasks') {
       return;
     }
     scrollMessagesToBottom(false);
-  }, [threadMessages, scrollMessagesToBottom, tasksViewMode]);
+  }, [activeTab, scrollMessagesToBottom, threadMessages]);
 
   const handleSidebarGranolaAction = useCallback(async () => {
     if (isConnecting || isSyncing) {
@@ -2809,7 +2334,6 @@ export default function GranolaHomeScreen() {
         return;
       }
       setSelectedTodoId(todoId);
-      setTasksViewMode('chat');
       setStartingTodoId(todoId);
       setLiveStatus('Starting task execution...');
       try {
@@ -2973,6 +2497,119 @@ export default function GranolaHomeScreen() {
     }
   }, [fetchTasksFeed, isReconnectingExecutor]);
 
+  const handleUpdateWorkspacePrefs = useCallback(
+    async (patch: { viewMode?: 'list' | 'kanban'; groupBy?: TasksWorkspace['prefs']['groupBy']; sortBy?: TasksWorkspace['prefs']['sortBy'] }) => {
+      try {
+        await granolaClient.tasksUpdateWorkspacePrefs(patch);
+        await fetchTasksFeed();
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to update task workspace.');
+      }
+    },
+    [fetchTasksFeed],
+  );
+
+  const handleUpdateTaskMetadata = useCallback(
+    async (todoId: string, patch: { assigneeId?: string | null; listId?: string; boardColumnId?: string; following?: boolean }) => {
+      try {
+        await granolaClient.tasksUpdateMetadata(todoId, patch);
+        await fetchTasksFeed();
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to update task metadata.');
+      }
+    },
+    [fetchTasksFeed],
+  );
+
+  const handleAIConnect = useCallback(async () => {
+    if (isAIConnecting) {
+      return;
+    }
+    setIsAIConnecting(true);
+    try {
+      const result = await granolaClient.aiConnect();
+      if (!result.ok && result.message) {
+        setAIError(result.message);
+      } else {
+        setAIError(null);
+      }
+    } catch (error) {
+      setAIError(error instanceof Error ? error.message : 'Unable to reconnect Codex AI.');
+    } finally {
+      setIsAIConnecting(false);
+      await fetchAIStatus();
+    }
+  }, [fetchAIStatus, isAIConnecting]);
+
+  const handleAIDisconnect = useCallback(async () => {
+    if (isAIDisconnecting) {
+      return;
+    }
+    setIsAIDisconnecting(true);
+    try {
+      const result = await granolaClient.aiDisconnect();
+      if (!result.ok && result.message) {
+        setAIError(result.message);
+      } else {
+        setAIError(null);
+      }
+    } catch (error) {
+      setAIError(error instanceof Error ? error.message : 'Unable to disconnect Codex AI.');
+    } finally {
+      setIsAIDisconnecting(false);
+      await fetchAIStatus();
+    }
+  }, [fetchAIStatus, isAIDisconnecting]);
+
+  const handleSummarizeTask = useCallback(async () => {
+    if (!selectedTask || isSummarizingTask) {
+      return;
+    }
+    setIsSummarizingTask(true);
+    try {
+      const context = [
+        `Task: ${selectedTask.title || selectedTask.description || 'Untitled task'}`,
+        selectedTask.description ? `Description: ${selectedTask.description}` : '',
+        selectedTask.meetingTitle ? `Source meeting: ${selectedTask.meetingTitle}` : '',
+        selectedTask.publicSummary ? `Current summary: ${selectedTask.publicSummary}` : '',
+        selectedTask.latestPublicStep ? `Latest step: ${selectedTask.latestPublicStep}` : '',
+        ...(planningContext?.sections.flatMap((section) => [`${section.title}:`, ...section.bullets.map((bullet) => `- ${bullet}`)]) ?? []),
+        ...threadMessages
+          .slice(-10)
+          .map((message) => `${message.role.toUpperCase()}: ${(message.content || '').replace(/\s+/g, ' ').trim()}`),
+      ].filter((entry) => entry.trim().length > 0);
+
+      const result = await granolaClient.aiGenerate({
+        kind: 'task-brief',
+        title: selectedTask.title || selectedTask.description || 'Task brief',
+        prompt:
+          'Create a concise working brief for this task. Focus on the outcome, source context, current state, risks, and the next concrete moves.',
+        context,
+        sessionKey: `task-brief:${selectedTask.todoId}`,
+      });
+
+      if (!result.ok || !result.content) {
+        setTasksError(result.message || 'Unable to create a task brief.');
+        return;
+      }
+
+      await granolaClient.tasksUpdateMetadata(selectedTask.todoId, {
+        latestBrief: {
+          content: result.content,
+          generatedAt: new Date().toISOString(),
+          modelLabel: result.modelLabel,
+        },
+      });
+      setTasksError(null);
+      await fetchTasksFeed();
+      await fetchAIStatus();
+    } catch (error) {
+      setTasksError(error instanceof Error ? error.message : 'Unable to create a task brief.');
+    } finally {
+      setIsSummarizingTask(false);
+    }
+  }, [fetchAIStatus, fetchTasksFeed, isSummarizingTask, planningContext?.sections, selectedTask, threadMessages]);
+
   const sidebarActionLabel = isConnecting
     ? 'Connecting...'
     : isSyncing
@@ -2990,6 +2627,7 @@ export default function GranolaHomeScreen() {
       onSelectTab={showPrimaryTab}
       sidebarActionLabel={sidebarActionLabel}
       sidebarActionDisabled={isConnecting || isSyncing}
+      compactWorkspace={activeTab === 'tasks'}
       onSidebarAction={() => {
         void handleSidebarGranolaAction();
       }}
@@ -3028,6 +2666,24 @@ export default function GranolaHomeScreen() {
     return <DocsWorkspace sidebar={sidebar} />;
   }
 
+  if (activeTab === 'ai') {
+    return (
+      <AISettingsScreen
+        sidebar={sidebar}
+        status={aiStatus}
+        error={aiError}
+        onConnect={() => {
+          void handleAIConnect();
+        }}
+        onDisconnect={() => {
+          void handleAIDisconnect();
+        }}
+        isConnecting={isAIConnecting}
+        isDisconnecting={isAIDisconnecting}
+      />
+    );
+  }
+
   if (activeTab !== 'tasks') {
     return (
       <GranolaReplicaHome
@@ -3050,267 +2706,93 @@ export default function GranolaHomeScreen() {
   }
 
   return (
-    <div className="granola-frame" data-name="Granola" data-node-id="13:2">
-      {sidebar}
-
-      <main className="granola-main">
-        <section className="copilot-shell" aria-label="Tasks Copilot">
-          <header className="copilot-header">
-            <h1>Tasks</h1>
-            <div className="copilot-header__meta">
-              <span className={cx('copilot-chip', `is-${tasksFeed?.executor.state ?? 'unknown'}`)}>
-                IronClaw: {tasksFeed?.executor.state ?? 'unknown'}
-              </span>
-              <button type="button" className="copilot-secondary-button" onClick={() => void handleReconnectExecutor()} disabled={isReconnectingExecutor}>
-                {isReconnectingExecutor ? 'Reconnecting...' : 'Reconnect'}
-              </button>
-              <span className={cx('copilot-chip', `is-health-${tasksFeed?.syncHealth ?? 'healthy'}`)}>{syncHealthLabel(tasksFeed)}</span>
-              {!isElectronRuntime ? <span className="copilot-chip is-warning">Electron runtime required for connect/sync/execution.</span> : null}
-            </div>
-          </header>
-
-          {tasksError ? <p className="copilot-error">{tasksError}</p> : null}
-
-          {tasksViewMode === 'list' ? (
-            <section className="copilot-list-view" aria-label="Task list">
-              <div className="copilot-list-stats">
-                <span>Last sync: {formatDate(tasksFeed?.lastSyncAt ?? null)}</span>
-                <span>Next auto-sync: {formatDate(tasksFeed?.nextAutoSyncAt ?? null)}</span>
-                <span>Discovered: {tasksFeed?.counts.discovered ?? 0}</span>
-                <span>Submitted: {tasksFeed?.counts.submitted ?? 0}</span>
-                <span>Queued runs: {tasksFeed?.queuedRunCount ?? 0}</span>
-              </div>
-
-              {showCopilotWarning && tasksFeed?.warning ? (
-                <CopilotWarning
-                  summary={tasksFeed.warning}
-                  details={tasksFeed.warningDetails}
-                  listKeyPrefix="warning-list"
-                  onHide={handleHideWarning}
-                />
-              ) : null}
-
-              <div className="copilot-task-list">
-                {tasks.length === 0 ? (
-                  <p className="copilot-empty">
-                    {tasksFeed?.auth.authenticated
-                      ? 'No tasks extracted yet. Sync Granola to pull meetings.'
-                      : 'Connect Granola to start extracting tasks.'}
-                  </p>
-                ) : null}
-                {tasks.map((task) => (
-                  <TaskListRow
-                    key={task.todoId}
-                    task={task}
-                    selected={task.todoId === selectedTodoId}
-                    onSelect={() => {
-                      setSelectedTodoId(task.todoId);
-                    }}
-                    onOpenChat={() => {
-                      void openTaskChat(task.todoId);
-                    }}
-                    onStart={() => {
-                      void handleStartTodo(task.todoId);
-                    }}
-                    isStarting={startingTodoId === task.todoId}
-                  />
-                ))}
-              </div>
-            </section>
-          ) : (
-            <section className="copilot-chat-view" aria-label="Task chat">
-              <header className="copilot-chat-topbar">
-                <button
-                  type="button"
-                  className="copilot-secondary-button"
-                  onClick={() => {
-                    setTasksViewMode('list');
-                    setLiveStatus(null);
-                  }}
-                >
-                  Back to tasks
-                </button>
-                <div className="copilot-chat-topbar__copy">
-                  <h2>{selectedTask?.title ?? 'Select a task'}</h2>
-                  <p>{selectedTask?.meetingTitle ?? 'Task chat is ready.'}</p>
-                </div>
-                <div className="copilot-chat-topbar__actions">
-                  <button
-                    type="button"
-                    className="copilot-primary-button"
-                    onClick={() => {
-                      if (selectedTodoId) {
-                        void handleStartTodo(selectedTodoId, selectedStartOptions);
-                      }
-                    }}
-                    disabled={!selectedTodoId || Boolean(startingTodoId) || !plannerSelectionValid}
-                  >
-                    {startingTodoId && selectedTodoId === startingTodoId ? 'Starting...' : 'Start Task'}
-                  </button>
-                  <button
-                    type="button"
-                    className="copilot-secondary-button"
-                    onClick={() => {
-                      if (selectedTodoId) {
-                        void handleCancelRun();
-                      }
-                    }}
-                    disabled={!selectedTodoId || activeRunTodoId !== selectedTodoId}
-                  >
-                    Stop
-                  </button>
-                  <button
-                    type="button"
-                    className="copilot-secondary-button"
-                    onClick={() => {
-                      if (selectedTodoId) {
-                        void handleOpenTodoRun(selectedTodoId);
-                      }
-                    }}
-                    disabled={!selectedTodoId || openingRunTodoId === selectedTodoId}
-                  >
-                    {openingRunTodoId === selectedTodoId ? 'Opening...' : 'Open in IronClaw'}
-                  </button>
-                  <button
-                    type="button"
-                    className="copilot-secondary-button"
-                    onClick={() => {
-                      void handleClearThread();
-                    }}
-                    disabled={!selectedTodoId}
-                  >
-                    Clear
-                  </button>
-                </div>
-              </header>
-
-              <details className="copilot-runtime-drawer">
-                <summary>Runtime details</summary>
-                <div className="copilot-runtime-drawer__grid">
-                  <span>Profile: {tasksFeed?.runtime.ironclawProfile ?? 'ironclaw'}</span>
-                  <span>Version: {tasksFeed?.runtime.ironclawVersion ?? 'unknown'}</span>
-                  <span>Last sync: {formatDate(tasksFeed?.lastSyncAt ?? null)}</span>
-                  <span>Next auto-sync: {formatDate(tasksFeed?.nextAutoSyncAt ?? null)}</span>
-                  <span>Discovered: {tasksFeed?.counts.discovered ?? 0}</span>
-                  <span>Submitted: {tasksFeed?.counts.submitted ?? 0}</span>
-                </div>
-              </details>
-
-              {activityLabel ? (
-                <div className="copilot-live-status">
-                  <span className={cx('copilot-live-status__spinner', showWorkingIndicator && 'is-active')} aria-hidden="true">
-                    <span />
-                    <span />
-                    <span />
-                  </span>
-                  <span>{activityLabel}</span>
-                </div>
-              ) : null}
-
-              {showCopilotWarning && tasksFeed?.warning ? (
-                <CopilotWarning
-                  summary={tasksFeed.warning}
-                  details={tasksFeed.warningDetails}
-                  listKeyPrefix="warning-chat"
-                  onHide={handleHideWarning}
-                />
-              ) : null}
-
-              <div ref={messagesViewportRef} className="copilot-chat-messages">
-                {isTaskPreStart ? (
-                  <TaskPlanningPanel
-                    context={planningContext}
-                    contextLoading={planningContextLoading}
-                    draft={planningDraft}
-                    isPlanning={isPlanning}
-                    planningInput={planningInput}
-                    onPlanningInputChange={setPlanningInput}
-                    onGenerate={() => {
-                      void handleGeneratePlan();
-                    }}
-                    selectedMode={selectedPlanMode}
-                    selectedOptionId={selectedPlanOptionId}
-                    onSelectOption={(mode, optionId) => {
-                      setSelectedPlanMode(mode);
-                      if (mode === 'preset') {
-                        setSelectedPlanOptionId(optionId ?? null);
-                        return;
-                      }
-                      setSelectedPlanOptionId(null);
-                    }}
-                    customInstruction={customPlanInstruction}
-                    onCustomInstructionChange={setCustomPlanInstruction}
-                  />
-                ) : null}
-
-                {threadHasMore ? (
-                  <button
-                    type="button"
-                    className="copilot-load-older"
-                    onClick={() => {
-                      if (selectedTodoId && threadNextCursor) {
-                        void fetchThread(selectedTodoId, threadNextCursor, true);
-                      }
-                    }}
-                    disabled={threadLoadingOlder}
-                  >
-                    {threadLoadingOlder ? 'Loading...' : 'Load older messages'}
-                  </button>
-                ) : null}
-
-                {threadLoading ? <p className="copilot-empty">Loading chat...</p> : null}
-                {!threadLoading && threadMessages.length === 0 && !isTaskPreStart ? (
-                  <p className="copilot-empty">No messages yet. Click Start Task or send a message to begin.</p>
-                ) : null}
-                {chatRenderBlocks.map((block) => {
-                  if (block.kind === 'trace-group') {
-                    return (
-                      <RunTraceGroup
-                        key={block.key}
-                        messages={block.messages}
-                        expandedRows={expandedTraceRows}
-                        onToggleRow={toggleTraceRow}
-                      />
-                    );
-                  }
-                  const message = block.message;
-                  if (message.role === 'assistant' && message.streaming && selectedRunActive) {
-                    return null;
-                  }
-                  return <ChatBubble key={block.key} message={message} />;
-                })}
-              </div>
-
-              <div className="copilot-composer">
-                <textarea
-                  value={composerText}
-                  onChange={(event) => {
-                    setComposerText(event.target.value);
-                  }}
-                  placeholder={isTaskPreStart ? 'Tell planner how this task should be planned...' : 'Message task copilot...'}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      void handleSendMessage();
-                    }
-                  }}
-                  disabled={!selectedTodoId || isSendingMessage}
-                />
-                <button
-                  type="button"
-                  className="copilot-primary-button"
-                  onClick={() => {
-                    void handleSendMessage();
-                  }}
-                  disabled={!selectedTodoId || isSendingMessage || composerText.trim().length === 0}
-                >
-                  {isSendingMessage ? (isTaskPreStart ? 'Planning...' : 'Sending...') : isTaskPreStart ? 'Plan' : 'Send'}
-                </button>
-              </div>
-            </section>
-          )}
-        </section>
-      </main>
-    </div>
+    <TasksWorkspaceScreen
+      sidebar={sidebar}
+      feed={tasksFeed}
+      workspace={tasksWorkspace}
+      error={tasksError}
+      isElectronRuntime={isElectronRuntime}
+      selectedTodoId={selectedTodoId}
+      selectedTask={selectedTask}
+      planningContext={planningContext}
+      planningContextLoading={planningContextLoading}
+      planningDraft={planningDraft}
+      planningInput={planningInput}
+      onPlanningInputChange={setPlanningInput}
+      isPlanning={isPlanning}
+      selectedPlanMode={selectedPlanMode}
+      selectedPlanOptionId={selectedPlanOptionId}
+      customPlanInstruction={customPlanInstruction}
+      onCustomPlanInstructionChange={setCustomPlanInstruction}
+      onSelectPlanOption={(mode, optionId) => {
+        setSelectedPlanMode(mode);
+        if (mode === 'preset') {
+          setSelectedPlanOptionId(optionId ?? null);
+          return;
+        }
+        setSelectedPlanOptionId(null);
+      }}
+      onGeneratePlan={() => {
+        void handleGeneratePlan();
+      }}
+      selectedStartOptions={selectedStartOptions}
+      plannerSelectionValid={plannerSelectionValid}
+      threadMessages={threadMessages}
+      threadLoading={threadLoading}
+      threadLoadingOlder={threadLoadingOlder}
+      threadHasMore={threadHasMore}
+      onLoadOlderThread={() => {
+        if (selectedTodoId && threadNextCursor) {
+          void fetchThread(selectedTodoId, threadNextCursor, true);
+        }
+      }}
+      composerText={composerText}
+      onComposerTextChange={setComposerText}
+      onSendMessage={() => {
+        void handleSendMessage();
+      }}
+      isSendingMessage={isSendingMessage}
+      isTaskPreStart={isTaskPreStart}
+      startingTodoId={startingTodoId}
+      openingRunTodoId={openingRunTodoId}
+      activeRunTodoId={activeRunTodoId}
+      showWorkingIndicator={showWorkingIndicator}
+      activityLabel={activityLabel}
+      showWarning={showCopilotWarning}
+      warningSummary={tasksFeed?.warning ?? null}
+      warningDetails={tasksFeed?.warningDetails ?? []}
+      onHideWarning={handleHideWarning}
+      onSelectTodo={(todoId) => {
+        void openTaskChat(todoId);
+      }}
+      onStartTodo={(todoId, options) => {
+        void handleStartTodo(todoId, options);
+      }}
+      onCancelRun={() => {
+        void handleCancelRun();
+      }}
+      onOpenRun={(todoId) => {
+        void handleOpenTodoRun(todoId);
+      }}
+      onClearThread={() => {
+        void handleClearThread();
+      }}
+      onReconnectExecutor={() => {
+        void handleReconnectExecutor();
+      }}
+      isReconnectingExecutor={isReconnectingExecutor}
+      onUpdateWorkspacePrefs={(patch) => {
+        void handleUpdateWorkspacePrefs(patch);
+      }}
+      onUpdateTaskMetadata={(todoId, patch) => {
+        void handleUpdateTaskMetadata(todoId, patch);
+      }}
+      aiStatus={aiStatus}
+      onOpenAISettings={showAITab}
+      onSummarizeTask={() => {
+        void handleSummarizeTask();
+      }}
+      isSummarizingTask={isSummarizingTask}
+    />
   );
 }

@@ -3,6 +3,9 @@ import type {
   AppInfo,
   AppSettings,
   AppSettingsPatch,
+  CodexAIActionInput,
+  CodexAIActionResult,
+  CodexAIStatus,
   DocsBlock,
   DocsCreateInput,
   DocsDocument,
@@ -19,6 +22,11 @@ import type {
   Note,
   NoteSummary,
   NoteUpdatePatch,
+  TaskMetadataPatch,
+  TaskWorkspaceItem,
+  TaskWorkspacePrefs,
+  TaskWorkspacePrefsPatch,
+  TasksWorkspace,
   TasksRealtimeEvent,
   WindowCommand,
 } from '../shared/types';
@@ -641,6 +649,43 @@ const browserFallback: GranolaAPI = {
       selectedTodoIdHint: null,
     };
   },
+  async tasksGetWorkspace(): Promise<TasksWorkspace> {
+    return {
+      sections: [
+        { id: 'all', label: 'All', description: 'Every extracted task', itemCount: 0 },
+        { id: 'assigned', label: 'Assigned', description: 'Tasks with an owner', itemCount: 0 },
+        { id: 'running', label: 'Running', description: 'Tasks with active execution', itemCount: 0 },
+        { id: 'completed', label: 'Completed', description: 'Completed execution history', itemCount: 0 },
+        { id: 'activity', label: 'Activity', description: 'Recent task movement', itemCount: 0 },
+      ],
+      lists: [{ id: 'granola-feed', label: 'Granola feed', itemCount: 0, kind: 'inbox' }],
+      boardColumns: [
+        { id: 'inbox', label: 'Inbox', itemCount: 0 },
+        { id: 'ready', label: 'Ready', itemCount: 0 },
+        { id: 'running', label: 'Running', itemCount: 0 },
+        { id: 'done', label: 'Done', itemCount: 0 },
+        { id: 'blocked', label: 'Blocked', itemCount: 0 },
+      ],
+      assignees: [],
+      prefs: {
+        viewMode: 'list',
+        groupBy: 'board',
+        sortBy: 'updated',
+      },
+      items: [],
+      selectedTodoIdHint: null,
+    };
+  },
+  async tasksUpdateMetadata(todoId: string, patch: TaskMetadataPatch): Promise<TaskWorkspaceItem> {
+    throw new Error(`Task workspace metadata is only available in Electron runtime (${todoId} ${JSON.stringify(patch)}).`);
+  },
+  async tasksUpdateWorkspacePrefs(_patch: TaskWorkspacePrefsPatch): Promise<TaskWorkspacePrefs> {
+    return {
+      viewMode: 'list',
+      groupBy: 'board',
+      sortBy: 'updated',
+    };
+  },
   async tasksConnect() {
     return {
       ok: false,
@@ -790,6 +835,44 @@ const browserFallback: GranolaAPI = {
         error: 'Granola task service is only available in Electron runtime.',
         markerPath: '',
       },
+    };
+  },
+  async aiGetStatus(): Promise<CodexAIStatus> {
+    return {
+      profile: 'ironclaw',
+      state: 'disconnected',
+      connected: false,
+      profileId: null,
+      expiresAt: null,
+      remainingMs: null,
+      reason: 'Codex AI is only available in Electron runtime.',
+      gatewayState: 'disconnected',
+      gatewayUrl: null,
+      dashboardUrl: null,
+      modelLabel: 'Codex / Auto',
+      lastCheckedAt: new Date().toISOString(),
+    };
+  },
+  async aiConnect() {
+    return {
+      ok: false,
+      launchedInteractive: false,
+      message: 'Codex AI is only available in Electron runtime.',
+    };
+  },
+  async aiDisconnect() {
+    return {
+      ok: false,
+      message: 'Codex AI is only available in Electron runtime.',
+    };
+  },
+  async aiGenerate(_input: CodexAIActionInput): Promise<CodexAIActionResult> {
+    return {
+      ok: false,
+      runId: null,
+      content: null,
+      message: 'Codex AI is only available in Electron runtime.',
+      modelLabel: 'Codex / Auto',
     };
   },
   tasksSubscribe(_listener: (event: TasksRealtimeEvent) => void) {

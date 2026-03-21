@@ -1,11 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../src/shared/channels.js';
 import type {
+  CodexAIActionInput,
   DocsCreateInput,
   DocsUpdatePatch,
   GranolaAPI,
   NoteUpdatePatch,
   AppSettingsPatch,
+  TaskMetadataPatch,
+  TaskWorkspacePrefsPatch,
   TasksRealtimeEvent,
   WindowCommand,
 } from '../src/shared/types.js';
@@ -28,7 +31,14 @@ const api: GranolaAPI = {
   docsGetDocument: (docId: string) => ipcRenderer.invoke(IPC_CHANNELS.docsGetDocument, docId),
   docsCreate: (input?: DocsCreateInput) => ipcRenderer.invoke(IPC_CHANNELS.docsCreate, input ?? null),
   docsUpdate: (docId: string, patch: DocsUpdatePatch) => ipcRenderer.invoke(IPC_CHANNELS.docsUpdate, docId, patch),
+  aiGetStatus: () => ipcRenderer.invoke(IPC_CHANNELS.aiGetStatus),
+  aiConnect: () => ipcRenderer.invoke(IPC_CHANNELS.aiConnect),
+  aiDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.aiDisconnect),
+  aiGenerate: (input: CodexAIActionInput) => ipcRenderer.invoke(IPC_CHANNELS.aiGenerate, input),
   tasksGetFeed: () => ipcRenderer.invoke(IPC_CHANNELS.tasksGetFeed),
+  tasksGetWorkspace: () => ipcRenderer.invoke(IPC_CHANNELS.tasksGetWorkspace),
+  tasksUpdateMetadata: (todoId: string, patch: TaskMetadataPatch) => ipcRenderer.invoke(IPC_CHANNELS.tasksUpdateMetadata, todoId, patch),
+  tasksUpdateWorkspacePrefs: (patch: TaskWorkspacePrefsPatch) => ipcRenderer.invoke(IPC_CHANNELS.tasksUpdateWorkspacePrefs, patch),
   tasksConnect: () => ipcRenderer.invoke(IPC_CHANNELS.tasksConnect),
   tasksOpenPendingAuthorization: () => ipcRenderer.invoke(IPC_CHANNELS.tasksOpenPendingAuth),
   tasksSyncNow: () => ipcRenderer.invoke(IPC_CHANNELS.tasksSyncNow),

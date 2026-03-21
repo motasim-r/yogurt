@@ -3,10 +3,19 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { IPC_CHANNELS } from '../src/shared/channels.js';
-import type { DocsCreateInput, DocsUpdatePatch, TaskStartOptions, WindowCommand } from '../src/shared/types.js';
+import type {
+  CodexAIActionInput,
+  DocsCreateInput,
+  DocsUpdatePatch,
+  TaskMetadataPatch,
+  TaskStartOptions,
+  TaskWorkspacePrefsPatch,
+  WindowCommand,
+} from '../src/shared/types.js';
 import { InMemoryGranolaService } from './store.js';
 import { GranolaTaskService } from './granolaTasks/task-service.js';
 import { GranolaDocsService } from './granolaTasks/granola-docs-service.js';
+import { CodexAIService } from './granolaTasks/codex-ai-service.js';
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
@@ -25,6 +34,7 @@ let mainWindow: BrowserWindow | null = null;
 const service = new InMemoryGranolaService();
 let taskService: GranolaTaskService | null = null;
 let docsService: GranolaDocsService | null = null;
+let aiService: CodexAIService | null = null;
 let taskEventUnsubscribe: (() => void) | null = null;
 
 function withMainWindow(): BrowserWindow {
@@ -46,6 +56,13 @@ function withDocsService(): GranolaDocsService {
     throw new Error('docs service is not ready');
   }
   return docsService;
+}
+
+function withAIService(): CodexAIService {
+  if (!aiService) {
+    throw new Error('AI service is not ready');
+  }
+  return aiService;
 }
 
 function isAppNavigation(url: string): boolean {
@@ -146,6 +163,22 @@ function registerIpcHandlers(): void {
     return withDocsService().docsUpdate(docId, patch as DocsUpdatePatch);
   });
   ipcMain.handle(IPC_CHANNELS.tasksGetFeed, () => withTaskService().getFeed());
+  ipcMain.handle(IPC_CHANNELS.tasksGetWorkspace, () => withTaskService().tasksGetWorkspace());
+  ipcMain.handle(IPC_CHANNELS.tasksUpdateMetadata, (_event, todoId: unknown, patch: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error('task metadata patch must be an object');
+    }
+    return withTaskService().tasksUpdateMetadata(todoId, patch as TaskMetadataPatch);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksUpdateWorkspacePrefs, (_event, patch: unknown) => {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error('workspace prefs patch must be an object');
+    }
+    return withTaskService().tasksUpdateWorkspacePrefs(patch as TaskWorkspacePrefsPatch);
+  });
   ipcMain.handle(IPC_CHANNELS.tasksConnect, () => withTaskService().connect());
   ipcMain.handle(IPC_CHANNELS.tasksOpenPendingAuth, () => withTaskService().openPendingAuthorization());
   ipcMain.handle(IPC_CHANNELS.tasksSyncNow, () => withTaskService().syncNow());
@@ -211,6 +244,15 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC_CHANNELS.tasksRuntimeCheck, () => withTaskService().tasksRuntimeCheck());
   ipcMain.handle(IPC_CHANNELS.tasksExtractNow, () => withTaskService().tasksRefreshExtraction());
+  ipcMain.handle(IPC_CHANNELS.aiGetStatus, () => withAIService().getStatus());
+  ipcMain.handle(IPC_CHANNELS.aiConnect, () => withAIService().connect());
+  ipcMain.handle(IPC_CHANNELS.aiDisconnect, () => withAIService().disconnect());
+  ipcMain.handle(IPC_CHANNELS.aiGenerate, (_event, input: unknown) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('AI action input must be an object');
+    }
+    return withAIService().generate(input as CodexAIActionInput);
+  });
 }
 
 async function createMainWindow(): Promise<void> {
@@ -265,6 +307,7 @@ app.on('ready', async () => {
   taskService = new GranolaTaskService({
     dataDir: granolaDataDir,
     tokenEncryptionKey: process.env.TOKEN_ENCRYPTION_KEY,
+    ironclawProfile: process.env.IRONCLAW_PROFILE ?? 'ironclaw',
     legacyDataDir: process.env.GRANOLA_OPENCLAW_LEGACY_DATA_DIR ?? '/Users/motasimrahman/Desktop/granola-openclaw/data',
     canonicalProjectPath: path.resolve(app.getAppPath(), '../..'),
     openExternal: async (url: string) => {
@@ -273,6 +316,9 @@ app.on('ready', async () => {
     mcpUrl: process.env.GRANOLA_MCP_URL,
   });
   await taskService.init();
+  aiService = new CodexAIService({
+    profile: process.env.IRONCLAW_PROFILE ?? 'ironclaw',
+  });
   docsService = new GranolaDocsService(granolaDataDir);
   await docsService.init();
   taskEventUnsubscribe = taskService.onRealtimeEvent((event) => {
@@ -295,6 +341,7 @@ app.on('before-quit', async () => {
     await taskService.dispose();
   }
   docsService = null;
+  aiService = null;
 });
 
 app.on('window-all-closed', () => {

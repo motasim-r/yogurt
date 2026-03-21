@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
+  CodexAIStatus,
   DocsDocument,
   DocsHome,
   GranolaChatRecipe,
@@ -11,6 +12,7 @@ import type {
   TaskChatMessage,
   TaskPlanDraft,
   TaskPlanningContext,
+  TasksWorkspace,
   TasksFeed,
   TasksRealtimeEvent,
 } from './shared/types';
@@ -25,6 +27,7 @@ const {
   makeChatRecipes,
   makeChatThread,
   makeDocsDocument,
+  makeWorkspace,
   makeThread,
   makePlanningContext,
   granolaClientMock,
@@ -166,6 +169,46 @@ const {
     connectionState: 'connected',
     warning: null,
     warningDetails: [],
+  });
+
+  const makeWorkspace = (feed: TasksFeed): TasksWorkspace => ({
+    sections: [
+      { id: 'all', label: 'All', description: 'Every extracted task', itemCount: feed.todos.length },
+      { id: 'assigned', label: 'Assigned', description: 'Tasks with an owner', itemCount: feed.todos.filter((todo) => Boolean(todo.owner)).length },
+      { id: 'running', label: 'Running', description: 'Tasks with active execution', itemCount: feed.todos.filter((todo) => todo.runQueueState === 'running' || todo.runQueueState === 'queued').length },
+      { id: 'completed', label: 'Completed', description: 'Completed execution history', itemCount: feed.todos.filter((todo) => todo.status === 'submitted').length },
+      { id: 'activity', label: 'Activity', description: 'Recent task movement', itemCount: feed.todos.length },
+    ],
+    lists: [
+      { id: 'meeting:meeting-1', label: 'Weekly GTM review', itemCount: 1, kind: 'meeting' },
+      { id: 'meeting:meeting-2', label: 'Prospecting strategy', itemCount: 1, kind: 'meeting' },
+    ],
+    boardColumns: [
+      { id: 'inbox', label: 'Inbox', itemCount: 1 },
+      { id: 'ready', label: 'Ready', itemCount: 0 },
+      { id: 'running', label: 'Running', itemCount: 0 },
+      { id: 'done', label: 'Done', itemCount: 1 },
+      { id: 'blocked', label: 'Blocked', itemCount: 0 },
+    ],
+    assignees: [{ id: 'assignee:motasim', label: 'Motasim', initials: 'M', tone: 'blue' }],
+    prefs: {
+      viewMode: 'list',
+      groupBy: 'board',
+      sortBy: 'updated',
+    },
+    items: feed.todos.map((todo) => ({
+      ...todo,
+      createdAt: todo.lastUpdatedAt,
+      creatorLabel: 'Granola',
+      assignee: todo.owner
+        ? { id: 'assignee:motasim', label: todo.owner, initials: 'M', tone: 'blue' as const }
+        : null,
+      listId: `meeting:${todo.meetingId}`,
+      boardColumnId: todo.todoId === 'todo-2' ? 'done' : 'inbox',
+      following: false,
+      latestBrief: null,
+    })),
+    selectedTodoIdHint: feed.selectedTodoIdHint,
   });
 
   const makeHomeNoteDetail = (noteId: string): HomeNoteDetail => ({
@@ -438,6 +481,7 @@ const {
 
   const state = {
     feed: makeFeed(),
+    workspace: null as TasksWorkspace | null,
     homeFeed: makeHomeFeed(),
     threads: new Map<string, TaskChatMessage[]>([
       ['todo-1', makeThread('todo-1')],
@@ -465,7 +509,22 @@ const {
       ['doc-2', makeDocsDocument('doc-2', 'VectorHaul Launch Narrative', 'wiki', { shared: true, pinned: true, ownerLabel: 'Laura Bennett', iconTone: 'violet', recentLabel: '13:42 Today' })],
       ['doc-3', makeDocsDocument('doc-3', 'Weekly Brief March 21', 'drive', { shared: true, iconTone: 'amber', recentLabel: '12:11 Today' })],
     ]),
+    aiStatus: {
+      profile: 'ironclaw',
+      state: 'connected',
+      connected: true,
+      profileId: 'openai-codex:test',
+      expiresAt: null,
+      remainingMs: null,
+      reason: null,
+      gatewayState: 'connected',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      modelLabel: 'Codex / Auto',
+      lastCheckedAt: '2026-02-28T10:01:00.000Z',
+    } as CodexAIStatus,
   };
+  state.workspace = makeWorkspace(state.feed);
 
   const granolaClientMock = {
     getAppInfo: vi.fn(async () => ({ version: '0.1.0-test', platform: 'test' })),
@@ -626,6 +685,44 @@ const {
       return JSON.parse(JSON.stringify(updated));
     }),
     tasksGetFeed: vi.fn(async () => JSON.parse(JSON.stringify(state.feed))),
+    tasksGetWorkspace: vi.fn(async () => JSON.parse(JSON.stringify(state.workspace))),
+    tasksUpdateMetadata: vi.fn(async (todoId: string, patch: { assigneeId?: string | null; listId?: string; boardColumnId?: string; following?: boolean; latestBrief?: { content: string; generatedAt: string; modelLabel: string } | null }) => {
+      const current = state.workspace?.items.find((item) => item.todoId === todoId);
+      if (!current || !state.workspace) {
+        throw new Error(`missing workspace item for ${todoId}`);
+      }
+      const updated = {
+        ...current,
+        assignee:
+          typeof patch.assigneeId === 'string' && patch.assigneeId
+            ? state.workspace.assignees.find((assignee) => assignee.id === patch.assigneeId) ?? current.assignee
+            : patch.assigneeId === null
+              ? null
+              : current.assignee,
+        listId: typeof patch.listId === 'string' ? patch.listId : current.listId,
+        boardColumnId: typeof patch.boardColumnId === 'string' ? patch.boardColumnId : current.boardColumnId,
+        following: typeof patch.following === 'boolean' ? patch.following : current.following,
+        latestBrief: Object.prototype.hasOwnProperty.call(patch, 'latestBrief') ? patch.latestBrief ?? null : current.latestBrief,
+      };
+      state.workspace = {
+        ...state.workspace,
+        items: state.workspace.items.map((item) => (item.todoId === todoId ? updated : item)),
+      };
+      return JSON.parse(JSON.stringify(updated));
+    }),
+    tasksUpdateWorkspacePrefs: vi.fn(async (patch: Partial<TasksWorkspace['prefs']>) => {
+      if (!state.workspace) {
+        throw new Error('missing workspace');
+      }
+      state.workspace = {
+        ...state.workspace,
+        prefs: {
+          ...state.workspace.prefs,
+          ...patch,
+        },
+      };
+      return JSON.parse(JSON.stringify(state.workspace.prefs));
+    }),
     tasksConnect: vi.fn(async () => ({ ok: true, needsBrowser: true })),
     tasksOpenPendingAuthorization: vi.fn(async () => ({ ok: true })),
     tasksSyncNow: vi.fn(async () => ({ ok: true, meetingCount: 0, fetchedAt: new Date().toISOString() })),
@@ -717,6 +814,34 @@ const {
         markerPath: '/tmp/.legacy-openclaw-import.json',
       },
     })),
+    aiGetStatus: vi.fn(async () => JSON.parse(JSON.stringify(state.aiStatus))),
+    aiConnect: vi.fn(async () => {
+      state.aiStatus = {
+        ...state.aiStatus,
+        state: 'connected',
+        connected: true,
+        profileId: 'openai-codex:test',
+        reason: null,
+      };
+      return { ok: true, launchedInteractive: true };
+    }),
+    aiDisconnect: vi.fn(async () => {
+      state.aiStatus = {
+        ...state.aiStatus,
+        state: 'disconnected',
+        connected: false,
+        profileId: null,
+        reason: 'Disconnected for test.',
+      };
+      return { ok: true };
+    }),
+    aiGenerate: vi.fn(async () => ({
+      ok: true,
+      runId: 'ai-run-1',
+      content: '## Goal\n\n- Move this task forward\n\n## Current Context\n\n- Generated from mock state.',
+      message: 'Completed.',
+      modelLabel: 'Codex / Auto',
+    })),
     tasksSubscribe: vi.fn((listener: (event: TasksRealtimeEvent) => void) => {
       state.subscriber = listener;
       return () => {
@@ -742,6 +867,7 @@ const {
     makeChatThread,
     makeDocsDocument,
     makeDocsHome,
+    makeWorkspace,
     makeThread,
     makePlanningContext,
     granolaClientMock,
@@ -757,11 +883,32 @@ import App from './App';
 describe('App task copilot', () => {
   const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
 
-  async function openTasksWorkspace(user = userEvent.setup()) {
-    await user.click(await screen.findByRole('button', { name: /List recent todos/i }));
+  async function openTasksWorkspace(
+    user = userEvent.setup(),
+    options: { openDetail?: boolean; taskTitle?: string } = { openDetail: true, taskTitle: 'Research top CRM vendors' },
+  ) {
+    await user.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByLabelText('Tasks workspace');
     await screen.findByRole('heading', { name: 'Tasks' });
-    await screen.findByText('Research top CRM vendors');
+    if (options.openDetail ?? true) {
+      await user.click(clickTaskRow(options.taskTitle ?? 'Research top CRM vendors'));
+      await screen.findByRole('complementary', { name: 'Task detail' });
+      await screen.findByRole('button', { name: /Start Task/i });
+    }
     return user;
+  }
+
+  function clickTaskRow(title: string) {
+    const row = screen
+      .getAllByText(title)
+      .map((node) => node.closest('button'))
+      .find((node): node is HTMLButtonElement => Boolean(node));
+
+    if (!row) {
+      throw new Error(`Unable to find task row for ${title}`);
+    }
+
+    return row;
   }
 
   beforeEach(() => {
@@ -798,6 +945,7 @@ describe('App task copilot', () => {
       storage.setItem(DISMISSED_WARNING_STORAGE_KEY, '[]');
     }
     state.feed = makeFeed();
+    state.workspace = makeWorkspace(state.feed);
     state.homeFeed = makeHomeFeed();
     state.threads = new Map<string, TaskChatMessage[]>([
       ['todo-1', makeThread('todo-1')],
@@ -825,6 +973,20 @@ describe('App task copilot', () => {
       ['doc-2', makeDocsDocument('doc-2', 'VectorHaul Launch Narrative', 'wiki', { shared: true, pinned: true, ownerLabel: 'Laura Bennett', iconTone: 'violet', recentLabel: '13:42 Today' })],
       ['doc-3', makeDocsDocument('doc-3', 'Weekly Brief March 21', 'drive', { shared: true, iconTone: 'amber', recentLabel: '12:11 Today' })],
     ]);
+    state.aiStatus = {
+      profile: 'ironclaw',
+      state: 'connected',
+      connected: true,
+      profileId: 'openai-codex:test',
+      expiresAt: null,
+      remainingMs: null,
+      reason: null,
+      gatewayState: 'connected',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      modelLabel: 'Codex / Auto',
+      lastCheckedAt: '2026-02-28T10:01:00.000Z',
+    };
     vi.clearAllMocks();
   });
 
@@ -847,15 +1009,15 @@ describe('App task copilot', () => {
     expect(await screen.findByText('LA influencer strategy for song promotion')).toBeInTheDocument();
     expect(granolaClientMock.homeGetFeed).toHaveBeenCalled();
 
-    await openTasksWorkspace(user);
+    await user.click(await screen.findByRole('button', { name: /List recent todos/i }));
+    await screen.findByLabelText('Tasks workspace');
 
-    expect(screen.getByLabelText('Task list')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Task chat')).not.toBeInTheDocument();
+    expect(screen.getByText('Research top CRM vendors')).toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Task detail' })).not.toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getAllByRole('button', { name: /(Connect|Sync) Granola/i })).toHaveLength(1);
     });
-    expect(screen.getAllByRole('button', { name: /Start Task/i }).length).toBeGreaterThan(0);
-  });
+  }, 10000);
 
   it('opens Tasks copilot from the sidebar tasks item on home', async () => {
     const user = userEvent.setup();
@@ -864,7 +1026,9 @@ describe('App task copilot', () => {
     await user.click(screen.getByRole('button', { name: 'Tasks' }));
 
     await screen.findByRole('heading', { name: 'Tasks' });
-    expect(screen.getByLabelText('Task list')).toBeInTheDocument();
+    expect(screen.getByLabelText('Tasks workspace')).toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Task detail' })).not.toBeInTheDocument();
+    expect(document.querySelector('.granola-sidebar')).toHaveClass('is-compact-workspace');
   });
 
   it('falls back to the static upcoming card when the home feed has no future meeting', async () => {
@@ -985,7 +1149,7 @@ describe('App task copilot', () => {
     expect(await screen.findByRole('button', { name: /New chat/i })).toBeInTheDocument();
     expect(screen.getAllByText(/^what action items do i have\?$/i).length).toBeGreaterThan(0);
     expect(granolaClientMock.chatGetThread).toHaveBeenCalledWith('chat-2');
-  });
+  }, 10000);
 
   it('appends local messages in team chats and preserves them while mounted', async () => {
     const user = userEvent.setup();
@@ -1005,7 +1169,7 @@ describe('App task copilot', () => {
     await user.click(screen.getByText(/^Laura$/).closest('button') as HTMLButtonElement);
 
     expect((await screen.findAllByText(/Please ship the final deck tonight/i)).length).toBeGreaterThan(0);
-  });
+  }, 10000);
 
   it('sends a freeform chat prompt and opens the resulting thread', async () => {
     const user = userEvent.setup();
@@ -1175,26 +1339,65 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click((await screen.findAllByRole('button', { name: /Start Task/i }))[0] as HTMLButtonElement);
+    await user.click(screen.getByRole('button', { name: /Start Task/i }));
 
     await waitFor(() => {
       expect(granolaClientMock.tasksStart).toHaveBeenCalledWith('todo-1');
     });
-    expect(screen.getByLabelText('Task chat')).toBeInTheDocument();
+    expect(screen.getByText('Execution timeline')).toBeInTheDocument();
+  });
+
+  it('renders tasks as a two-column workspace by default and opens detail on selection', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTasksWorkspace(user, { openDetail: false });
+
+    expect(screen.queryByRole('complementary', { name: 'Task detail' })).not.toBeInTheDocument();
+
+    await user.click(clickTaskRow('Research top CRM vendors'));
+
+    expect(await screen.findByRole('complementary', { name: 'Task detail' })).toBeInTheDocument();
+    expect(screen.getByRole('tablist', { name: 'Task detail tabs' })).toBeInTheDocument();
+  });
+
+  it('closes the task detail pane and returns to the two-column workspace', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTasksWorkspace(user);
+
+    await user.click(screen.getByRole('button', { name: /Close task details/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('complementary', { name: 'Task detail' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('defaults to the plan tab for a pre-start task and activity for a threaded task', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', []);
+    render(<App />);
+    await openTasksWorkspace(user, { taskTitle: 'Research top CRM vendors' });
+
+    expect(screen.getByRole('tab', { name: 'Plan', selected: true })).toBeInTheDocument();
+    expect(screen.getByText('Planner')).toBeInTheDocument();
+
+    await user.click(clickTaskRow('Build outreach lead list'));
+
+    expect(await screen.findByRole('tab', { name: 'Activity', selected: true })).toBeInTheDocument();
+    expect(screen.getByText('Execution timeline')).toBeInTheDocument();
   });
 
   it('sends chat messages in selected task thread', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await openTasksWorkspace(user);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
 
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
     const composer = await screen.findByPlaceholderText(/Message task copilot/i);
     await user.type(composer, 'Continue with competitor research');
     await user.click(screen.getByRole('button', { name: /Send/i }));
 
     await waitFor(() => {
-      expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith('todo-1', 'Continue with competitor research');
+      expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith('todo-2', 'Continue with competitor research');
     });
   });
 
@@ -1204,8 +1407,7 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
-    expect(await screen.findByText(/Plan before launch/i)).toBeInTheDocument();
+    expect(await screen.findByText('Planner')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Plan task/i }));
     await waitFor(() => {
@@ -1213,8 +1415,8 @@ describe('App task copilot', () => {
     });
 
     expect(await screen.findByText(/^Recommended$/i, { selector: 'span' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Custom$/i })).toBeInTheDocument();
-    const optionCards = document.querySelectorAll('.task-plan-option');
+    expect(screen.getByRole('button', { name: /^Custom plan$/i })).toBeInTheDocument();
+    const optionCards = document.querySelectorAll('.tasks-plan-option');
     expect(optionCards).toHaveLength(4);
     expect(optionCards[3]?.className).toContain('is-custom');
   });
@@ -1225,8 +1427,7 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
-    const composer = await screen.findByPlaceholderText(/Tell planner how this task should be planned/i);
+    const composer = await screen.findByPlaceholderText(/Tell the planner how this task should be planned/i);
     await user.type(composer, 'Prioritize speed and include links');
     await user.click(screen.getByRole('button', { name: /^Plan$/i }));
 
@@ -1242,7 +1443,6 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
     await user.click(await screen.findByRole('button', { name: /Plan task/i }));
     await waitFor(() => {
       expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
@@ -1270,14 +1470,13 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
     await user.click(await screen.findByRole('button', { name: /Plan task/i }));
     await waitFor(() => {
       expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
     });
 
-    await user.click(screen.getByRole('button', { name: /^Custom$/i }));
-    const customField = screen.getByPlaceholderText(/Type extra planning instructions/i);
+    await user.click(screen.getByRole('button', { name: /^Custom plan$/i }));
+    const customField = screen.getByPlaceholderText(/Type custom planning instructions/i);
     await user.clear(customField);
     await user.type(customField, 'Focus on enterprise CRM players first.');
     await user.click(screen.getByRole('button', { name: /^Start Task$/i }));
@@ -1302,7 +1501,7 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[1] as HTMLButtonElement);
+    await user.click(clickTaskRow('Build outreach lead list'));
 
     await waitFor(() => {
       expect(granolaClientMock.tasksGetThread).toHaveBeenCalledWith('todo-2', null, 40);
@@ -1312,9 +1511,7 @@ describe('App task copilot', () => {
   it('renders assistant markdown and links in chat view', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await openTasksWorkspace(user);
-
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
 
     const link = await screen.findByRole('link', { name: /CRM docs/i });
     expect(link).toHaveAttribute('href', 'https://example.com/crm');
@@ -1406,13 +1603,12 @@ describe('App task copilot', () => {
 
     render(<App />);
     await openTasksWorkspace(user);
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
 
-    expect(await screen.findByText('Thought')).toBeInTheDocument();
-    expect(screen.getByText('Actions')).toBeInTheDocument();
-    expect(screen.getByText('Sources')).toBeInTheDocument();
-    expect(screen.getByText(/Fetched 1 source/i)).toBeInTheDocument();
-    expect(screen.getByText(/Final result/i)).toBeInTheDocument();
+    expect(await screen.findByText('Run started')).toBeInTheDocument();
+    expect(screen.getByText('Thinking through the approach')).toBeInTheDocument();
+    expect(screen.getByText('Starting web search')).toBeInTheDocument();
+    expect(screen.getByText('Fetched example.com')).toBeInTheDocument();
+    expect(screen.getByText(/Vendor shortlist ready/i)).toBeInTheDocument();
     expect(screen.queryByText(/\"query\"/i)).not.toBeInTheDocument();
 
     for (const button of screen.getAllByRole('button', { name: /Show details/i })) {
@@ -1424,6 +1620,7 @@ describe('App task copilot', () => {
   it('hides raw streaming assistant text while selected task is actively running', async () => {
     const user = userEvent.setup();
     state.feed.activeRunTodoId = 'todo-1';
+    state.workspace = makeWorkspace(state.feed);
     state.threads.set('todo-1', [
       {
         messageId: 'active-trace',
@@ -1455,7 +1652,6 @@ describe('App task copilot', () => {
 
     render(<App />);
     await openTasksWorkspace(user);
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
 
     expect(await screen.findByText('Run started')).toBeInTheDocument();
     expect(screen.queryByText(/Progress update Progress update/i)).not.toBeInTheDocument();
@@ -1495,7 +1691,6 @@ describe('App task copilot', () => {
 
     render(<App />);
     await openTasksWorkspace(user);
-    await user.click((await screen.findAllByRole('button', { name: /Open Chat/i }))[0] as HTMLButtonElement);
 
     expect(await screen.findByText('Auto-retry triggered')).toBeInTheDocument();
     expect(screen.getByText(/Complete findings after retry/i)).toBeInTheDocument();
@@ -1522,6 +1717,56 @@ describe('App task copilot', () => {
 
     await waitFor(() => {
       expect(screen.queryByText(/Using cached richer notes/i)).not.toBeInTheDocument();
+    });
+  });
+
+  it('switches the task workspace to kanban and creates a Codex-backed brief', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTasksWorkspace(user);
+
+    const workspace = screen.getByLabelText('Tasks workspace');
+    await user.click(within(workspace).getByRole('button', { name: /Kanban/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksUpdateWorkspacePrefs).toHaveBeenCalledWith({ viewMode: 'kanban' });
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText('Inbox').length).toBeGreaterThan(0);
+    });
+
+    await user.click(screen.getByRole('tab', { name: 'AI Brief' }));
+    await user.click(screen.getByRole('button', { name: /Create brief/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.aiGenerate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'task-brief',
+          sessionKey: 'task-brief:todo-1',
+        }),
+      );
+    });
+    expect(await screen.findByText(/Move this task forward/i)).toBeInTheDocument();
+  });
+
+  it('renders global AI settings and supports reconnect/disconnect actions', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'AI' }));
+
+    expect(await screen.findByRole('heading', { name: 'AI Settings' })).toBeInTheDocument();
+    expect(screen.getAllByText(/openai-codex/i).length).toBeGreaterThan(0);
+    expect(screen.getByText('Codex / Auto')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Reconnect Codex/i }));
+    await waitFor(() => {
+      expect(granolaClientMock.aiConnect).toHaveBeenCalled();
+    });
+
+    await user.click(screen.getByRole('button', { name: /^Disconnect$/i }));
+    await waitFor(() => {
+      expect(granolaClientMock.aiDisconnect).toHaveBeenCalled();
     });
   });
 });

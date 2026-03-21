@@ -169,6 +169,86 @@ export interface TaskChatThreadPage {
   loadedAt: string;
 }
 
+export type TaskWorkspaceViewMode = 'list' | 'kanban';
+export type TaskWorkspaceGroupBy = 'board' | 'meeting' | 'assignee' | 'priority' | 'status';
+export type TaskWorkspaceSortBy = 'updated' | 'created' | 'priority' | 'title' | 'due';
+export type TaskWorkspaceSectionId = 'all' | 'assigned' | 'running' | 'completed' | 'activity';
+export type TaskAssigneeTone = 'olive' | 'blue' | 'violet' | 'amber' | 'rose' | 'slate';
+export type TaskListKind = 'inbox' | 'meeting' | 'project';
+
+export interface TaskWorkspaceSection {
+  id: TaskWorkspaceSectionId;
+  label: string;
+  description: string;
+  itemCount: number;
+}
+
+export interface TaskAssignee {
+  id: string;
+  label: string;
+  initials: string;
+  tone: TaskAssigneeTone;
+}
+
+export interface TaskList {
+  id: string;
+  label: string;
+  itemCount: number;
+  kind: TaskListKind;
+}
+
+export interface TaskBoardColumn {
+  id: string;
+  label: string;
+  itemCount: number;
+}
+
+export interface TaskAIBrief {
+  content: string;
+  generatedAt: string;
+  modelLabel: string;
+}
+
+export interface TaskWorkspacePrefs {
+  viewMode: TaskWorkspaceViewMode;
+  groupBy: TaskWorkspaceGroupBy;
+  sortBy: TaskWorkspaceSortBy;
+}
+
+export interface TaskWorkspacePrefsPatch {
+  viewMode?: TaskWorkspaceViewMode;
+  groupBy?: TaskWorkspaceGroupBy;
+  sortBy?: TaskWorkspaceSortBy;
+}
+
+export interface TaskMetadataPatch {
+  assigneeId?: string | null;
+  listId?: string;
+  boardColumnId?: string;
+  following?: boolean;
+  latestBrief?: TaskAIBrief | null;
+}
+
+export interface TaskWorkspaceItem extends TaskItemPublic {
+  createdAt: string;
+  creatorLabel: string;
+  assignee: TaskAssignee | null;
+  listId: string;
+  boardColumnId: string;
+  following: boolean;
+  latestBrief: TaskAIBrief | null;
+}
+
+export interface TasksWorkspace {
+  sections: TaskWorkspaceSection[];
+  lists: TaskList[];
+  boardColumns: TaskBoardColumn[];
+  assignees: TaskAssignee[];
+  prefs: TaskWorkspacePrefs;
+  items: TaskWorkspaceItem[];
+  selectedTodoIdHint: string | null;
+}
+
 export interface TaskCounts {
   discovered: number;
   approved: number;
@@ -320,6 +400,40 @@ export interface TasksFeed {
   activeRunTodoId: string | null;
   queuedRunCount: number;
   selectedTodoIdHint: string | null;
+}
+
+export type CodexAIConnectionState = 'connected' | 'disconnected' | 'error';
+export type CodexAIActionKind = 'task-brief' | 'context-summary';
+
+export interface CodexAIStatus {
+  profile: string;
+  state: CodexAIConnectionState;
+  connected: boolean;
+  profileId: string | null;
+  expiresAt: string | null;
+  remainingMs: number | null;
+  reason: string | null;
+  gatewayState: TasksExecutorState;
+  gatewayUrl: string | null;
+  dashboardUrl: string | null;
+  modelLabel: string;
+  lastCheckedAt: string | null;
+}
+
+export interface CodexAIActionInput {
+  kind: CodexAIActionKind;
+  title: string;
+  prompt: string;
+  context: string[];
+  sessionKey?: string | null;
+}
+
+export interface CodexAIActionResult {
+  ok: boolean;
+  runId: string | null;
+  content: string | null;
+  message: string;
+  modelLabel: string;
 }
 
 export interface HomeRecentNote {
@@ -536,6 +650,9 @@ export interface GranolaAPI {
   docsCreate(input?: DocsCreateInput): Promise<DocsDocument>;
   docsUpdate(docId: string, patch: DocsUpdatePatch): Promise<DocsDocument>;
   tasksGetFeed(): Promise<TasksFeed>;
+  tasksGetWorkspace(): Promise<TasksWorkspace>;
+  tasksUpdateMetadata(todoId: string, patch: TaskMetadataPatch): Promise<TaskWorkspaceItem>;
+  tasksUpdateWorkspacePrefs(patch: TaskWorkspacePrefsPatch): Promise<TaskWorkspacePrefs>;
   tasksConnect(): Promise<{ ok: boolean; needsBrowser: boolean; message?: string }>;
   tasksOpenPendingAuthorization(): Promise<{ ok: boolean; message?: string }>;
   tasksSyncNow(): Promise<{ ok: boolean; meetingCount: number; fetchedAt: string; warning?: string }>;
@@ -556,4 +673,8 @@ export interface GranolaAPI {
     discoveredCount: number;
     updatedCount: number;
   }>;
+  aiGetStatus(): Promise<CodexAIStatus>;
+  aiConnect(): Promise<{ ok: boolean; launchedInteractive: boolean; message?: string }>;
+  aiDisconnect(): Promise<{ ok: boolean; message?: string }>;
+  aiGenerate(input: CodexAIActionInput): Promise<CodexAIActionResult>;
 }
