@@ -9,14 +9,18 @@ type IconButtonProps = {
   children: ReactNode;
   className?: string;
   outline?: boolean;
+  onClick?: () => void;
+  active?: boolean;
 };
 
-export function IconButton({ ariaLabel, children, className, outline = false }: IconButtonProps) {
+export function IconButton({ ariaLabel, children, className, outline = false, onClick, active = false }: IconButtonProps) {
   return (
     <button
       type="button"
+      onClick={onClick}
+      aria-pressed={active}
       aria-label={ariaLabel}
-      className={cx('ds-icon-button', outline && 'ds-icon-button--outline', className)}
+      className={cx('ds-icon-button', outline && 'ds-icon-button--outline', active && 'is-active', className)}
     >
       {children}
     </button>

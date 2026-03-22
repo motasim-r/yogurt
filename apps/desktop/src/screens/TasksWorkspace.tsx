@@ -2,8 +2,8 @@ import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useStat
 import {
   CalendarIcon,
   ChatIcon,
+  ChevronLeftIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
   FileIcon,
   FolderIcon,
   GridIcon,
@@ -28,6 +28,16 @@ import type {
 
 type TaskFilterMode = 'all' | 'due_soon' | 'unassigned' | 'following';
 type TaskDetailTab = 'plan' | 'activity' | 'overview' | 'brief';
+type TaskQuickActionKind = 'planner' | 'message';
+
+type TaskQuickAction = {
+  id: string;
+  kind: TaskQuickActionKind;
+  label: string;
+  description: string;
+  prompt: string;
+  recommended?: boolean;
+};
 
 type TasksWorkspaceScreenProps = {
   sidebar: ReactNode;
@@ -91,6 +101,7 @@ type TasksWorkspaceScreenProps = {
   onOpenAISettings: () => void;
   onSummarizeTask: () => void;
   isSummarizingTask: boolean;
+  onRunQuickAction: (input: { kind: TaskQuickActionKind; text: string }) => void;
 };
 
 function cx(...values: Array<string | false | null | undefined>): string {
@@ -326,6 +337,110 @@ function defaultDetailTabForTask(task: TaskWorkspaceItem | null, hasThread: bool
   return 'plan';
 }
 
+function formatSentenceList(items: string[]): string {
+  if (items.length === 0) {
+    return '';
+  }
+  if (items.length === 1) {
+    return items[0] as string;
+  }
+  if (items.length === 2) {
+    return `${items[0]} and ${items[1]}`;
+  }
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+function taskContextText(task: TaskWorkspaceItem): string {
+  return [task.title, task.description, task.publicSummary, task.meetingTitle].filter(Boolean).join(' ');
+}
+
+function mentionedDemoProducts(task: TaskWorkspaceItem): string[] {
+  const haystack = taskContextText(task).toLowerCase();
+  return ['Granola', 'Lark', 'Sentra', 'Micro'].filter((name) => haystack.includes(name.toLowerCase()));
+}
+
+function meetingAudienceLabel(task: TaskWorkspaceItem): string {
+  const haystack = taskContextText(task).toLowerCase();
+  if (haystack.includes('granola')) {
+    return 'the Granola product engineer';
+  }
+  if (haystack.includes('customer') || haystack.includes('prospect')) {
+    return 'the customer or prospect';
+  }
+  return 'the person I am meeting';
+}
+
+function taskFocusSentence(task: TaskWorkspaceItem): string {
+  const products = mentionedDemoProducts(task);
+  if (products.length > 0) {
+    return `Focus especially on ${formatSentenceList(products)}.`;
+  }
+  return 'Focus on the products and organizations already mentioned in the task context.';
+}
+
+function buildPlannerQuickActions(task: TaskWorkspaceItem): TaskQuickAction[] {
+  const focus = taskFocusSentence(task);
+  return [
+    {
+      id: 'research-operator',
+      kind: 'planner',
+      label: 'Research operator',
+      description: 'Generate a web-first plan with a concise final artifact.',
+      prompt:
+        `Plan this as a research operator. Use public web sources, synthesize the strongest product patterns and tradeoffs, and end with a concise follow-up draft. ${focus} Keep the output sharp enough for a live product conversation.`,
+      recommended: true,
+    },
+    {
+      id: 'product-angle',
+      kind: 'planner',
+      label: 'Product angle',
+      description: 'Bias the work toward what to borrow, avoid, and say live.',
+      prompt:
+        `Bias this plan toward product recommendations: what to borrow, what to avoid, and the clearest narrative to say live. ${focus}`,
+    },
+    {
+      id: 'demo-ready-output',
+      kind: 'planner',
+      label: 'Demo-ready output',
+      description: 'Ask for a crisp memo plus a ready follow-up note.',
+      prompt:
+        'Structure the final output as 3 things to borrow, 2 things to avoid, 1 narrative to say live, and a short follow-up note ready for human approval.',
+    },
+  ];
+}
+
+function buildExecutionQuickActions(task: TaskWorkspaceItem): TaskQuickAction[] {
+  const audience = meetingAudienceLabel(task);
+  const focus = taskFocusSentence(task);
+  return [
+    {
+      id: 'refine-recommendations',
+      kind: 'message',
+      label: 'Refine recommendations',
+      description: 'Tighten the ideas, tradeoffs, and live narrative.',
+      prompt:
+        `Refine the findings into 3 specific product ideas to borrow, 2 anti-patterns to avoid, and 1 crisp narrative for ${audience}. ${focus} Keep it concise and concrete.`,
+      recommended: true,
+    },
+    {
+      id: 'draft-follow-up',
+      kind: 'message',
+      label: 'Draft follow-up',
+      description: 'Turn the findings into a concise message.',
+      prompt:
+        `Turn the findings into a concise follow-up message for ${audience}. Keep it warm, product-smart, and specific. ${focus}`,
+    },
+    {
+      id: 'prepare-send-ready',
+      kind: 'message',
+      label: 'Prepare send-ready version',
+      description: 'Make the message ready for human approval.',
+      prompt:
+        `Prepare a send-ready version of the follow-up for ${audience}. Keep it short, natural, and ready for human approval. Do not send anything yet.`,
+    },
+  ];
+}
+
 function TaskPlanningSurface({
   context,
   contextLoading,
@@ -524,6 +639,51 @@ function TaskMessageTimeline({
   );
 }
 
+function TaskQuickActionsPanel({
+  title,
+  description,
+  actions,
+  disabled,
+  onRun,
+}: {
+  title: string;
+  description: string;
+  actions: TaskQuickAction[];
+  disabled: boolean;
+  onRun: (input: { kind: TaskQuickActionKind; text: string }) => void;
+}) {
+  return (
+    <section className="tasks-detail-card tasks-detail-card--quick-actions">
+      <header className="tasks-detail-card__header">
+        <div>
+          <h3>{title}</h3>
+          <p>{description}</p>
+        </div>
+      </header>
+
+      <div className="tasks-quick-actions">
+        {actions.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            className={cx('tasks-quick-action', action.recommended && 'is-recommended')}
+            disabled={disabled}
+            onClick={() => {
+              onRun({ kind: action.kind, text: action.prompt });
+            }}
+          >
+            <span className="tasks-quick-action__top">
+              <strong>{action.label}</strong>
+              {action.recommended ? <span className="tasks-quick-action__badge">Recommended</span> : null}
+            </span>
+            <small>{action.description}</small>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function TasksWorkspaceScreen({
   sidebar,
   feed,
@@ -578,6 +738,7 @@ export default function TasksWorkspaceScreen({
   onOpenAISettings,
   onSummarizeTask,
   isSummarizingTask,
+  onRunQuickAction,
 }: TasksWorkspaceScreenProps) {
   const [selectedSectionId, setSelectedSectionId] = useState<TasksWorkspace['sections'][number]['id']>('all');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
@@ -671,6 +832,8 @@ export default function TasksWorkspaceScreen({
   const selectedAssigneeValue = detailTask?.assignee?.id ?? '__unassigned__';
   const primaryTab = isTaskPreStart ? 'plan' : 'activity';
   const hasThread = threadMessages.length > 0;
+  const plannerQuickActions = useMemo(() => (detailTask ? buildPlannerQuickActions(detailTask) : []), [detailTask]);
+  const executionQuickActions = useMemo(() => (detailTask ? buildExecutionQuickActions(detailTask) : []), [detailTask]);
 
   const openTaskDetail = (item: TaskWorkspaceItem) => {
     const nextHasThread = selectedTodoId === item.todoId && hasThread;
@@ -684,16 +847,13 @@ export default function TasksWorkspaceScreen({
       {sidebar}
 
       <main className="granola-main granola-main--tasks">
-        <section className={cx('tasks-shell', detailOpen && 'has-detail')} aria-label="Tasks workspace">
-          <aside className="tasks-nav" aria-label="Tasks navigation">
-            <header className="tasks-nav__header">
-              <div>
-                <h1>Tasks</h1>
-                <p className="tasks-nav__caption">Execution-ready work, grouped like a proper desktop workspace.</p>
-              </div>
+        <section className="tasks-shell" aria-label="Tasks workspace">
+          <aside className="tasks-nav workspace-sidebar" aria-label="Tasks navigation">
+            <header className="tasks-nav__header workspace-sidebar__header">
+              <h1 className="workspace-sidebar__title">Tasks</h1>
             </header>
 
-            <label className="tasks-nav__search" aria-label="Search tasks">
+            <label className="tasks-nav__search workspace-sidebar__search" aria-label="Search tasks">
               <SearchIcon className="glyph-14" />
               <input
                 value={searchQuery}
@@ -704,66 +864,66 @@ export default function TasksWorkspaceScreen({
               />
             </label>
 
-            <div className="tasks-nav__scroll">
-              <div className="tasks-nav__section">
-                <p className="tasks-nav__label">Views</p>
+            <div className="tasks-nav__scroll workspace-sidebar__scroll">
+              <div className="tasks-nav__section workspace-sidebar__stack">
+                <p className="tasks-nav__label workspace-sidebar__label">Views</p>
                 {workspace?.sections.map((section) => (
                   <button
                     key={section.id}
                     type="button"
-                    className={cx('tasks-nav__item', selectedSectionId === section.id && 'is-active')}
+                    className={cx('tasks-nav__item workspace-sidebar__item', selectedSectionId === section.id && 'is-active')}
                     onClick={() => {
                       setSelectedSectionId(section.id);
                     }}
                   >
-                    <span className="tasks-nav__item-copy">
+                    <span className="tasks-nav__item-copy workspace-sidebar__item-copy">
                       <strong>{section.label}</strong>
                       <small>{section.description}</small>
                     </span>
-                    <span>{section.itemCount}</span>
+                    <span className="workspace-sidebar__count">{section.itemCount}</span>
                   </button>
                 ))}
               </div>
 
-              <div className="tasks-nav__section">
+              <div className="tasks-nav__section workspace-sidebar__stack">
                 <div className="tasks-nav__label-row">
-                  <p className="tasks-nav__label">Lists</p>
+                  <p className="tasks-nav__label workspace-sidebar__label">Lists</p>
                   <FolderIcon className="glyph-14" />
                 </div>
                 <button
                   type="button"
-                  className={cx('tasks-nav__item', !selectedListId && 'is-active')}
+                  className={cx('tasks-nav__item workspace-sidebar__item', !selectedListId && 'is-active')}
                   onClick={() => {
                     setSelectedListId(null);
                   }}
                 >
-                  <span className="tasks-nav__item-copy">
+                  <span className="tasks-nav__item-copy workspace-sidebar__item-copy">
                     <strong>All lists</strong>
                     <small>Every extracted task</small>
                   </span>
-                  <span>{workspace?.items.length ?? 0}</span>
+                  <span className="workspace-sidebar__count">{workspace?.items.length ?? 0}</span>
                 </button>
                 {workspace?.lists.map((list) => (
                   <button
                     key={list.id}
                     type="button"
-                    className={cx('tasks-nav__item', selectedListId === list.id && 'is-active')}
+                    className={cx('tasks-nav__item workspace-sidebar__item', selectedListId === list.id && 'is-active')}
                     onClick={() => {
                       setSelectedListId(list.id);
                     }}
                   >
-                    <span className="tasks-nav__item-copy">
+                    <span className="tasks-nav__item-copy workspace-sidebar__item-copy">
                       <strong>{list.label}</strong>
                       <small>{list.kind === 'meeting' ? 'Meeting-backed list' : 'Task list'}</small>
                     </span>
-                    <span>{list.itemCount}</span>
+                    <span className="workspace-sidebar__count">{list.itemCount}</span>
                   </button>
                 ))}
               </div>
             </div>
           </aside>
 
-          <section className="tasks-board">
+          <section className={cx('tasks-board', detailOpen && 'has-drawer', 'workspace-body')}>
             <header className="tasks-board__header">
               <div>
                 <p className="tasks-board__eyebrow">Task workspace</p>
@@ -1007,13 +1167,29 @@ export default function TasksWorkspaceScreen({
                 </div>
               )}
             </div>
-          </section>
-
-          {detailOpen && detailTask ? (
-            <aside className="tasks-detail" aria-label="Task detail">
+            {detailOpen && detailTask ? (
               <>
+                <button
+                  type="button"
+                  className="tasks-drawer__scrim"
+                  aria-label="Dismiss task drawer overlay"
+                  onClick={() => {
+                    setDetailTodoId(null);
+                  }}
+                />
+                <aside className="tasks-detail tasks-detail--drawer workspace-body" aria-label="Task detail">
                 <header className="tasks-detail__header">
                   <div>
+                    <button
+                      type="button"
+                      className="tasks-detail__back tasks-soft-button"
+                      onClick={() => {
+                        setDetailTodoId(null);
+                      }}
+                    >
+                      <ChevronLeftIcon className="glyph-14" />
+                      <span>Back to all tasks</span>
+                    </button>
                     <p className="tasks-detail__eyebrow">{detailTask.meetingTitle || 'Granola task'}</p>
                     <h2>{detailTask.title || detailTask.description || 'Untitled task'}</h2>
                     <div className="tasks-detail__chips">
@@ -1058,16 +1234,6 @@ export default function TasksWorkspaceScreen({
                     </button>
                     <button type="button" className="tasks-soft-button" onClick={onClearThread}>
                       Clear
-                    </button>
-                    <button
-                      type="button"
-                      className="tasks-icon-button"
-                      aria-label="Close task details"
-                      onClick={() => {
-                        setDetailTodoId(null);
-                      }}
-                    >
-                      <ChevronRightIcon className="glyph-16" />
                     </button>
                   </div>
                 </header>
@@ -1262,44 +1428,62 @@ export default function TasksWorkspaceScreen({
                   ) : null}
 
                   {detailTab === 'plan' ? (
-                    <TaskPlanningSurface
-                      context={planningContext}
-                      contextLoading={planningContextLoading}
-                      draft={effectiveDraft}
-                      isPlanning={isPlanning}
-                      planningInput={planningInput}
-                      onPlanningInputChange={onPlanningInputChange}
-                      onGenerate={onGeneratePlan}
-                      selectedMode={selectedPlanMode}
-                      selectedOptionId={selectedPlanOptionId}
-                      onSelectOption={onSelectPlanOption}
-                      customInstruction={customPlanInstruction}
-                      onCustomInstructionChange={onCustomPlanInstructionChange}
-                    />
+                    <div className="tasks-detail__stack">
+                      <TaskQuickActionsPanel
+                        title="Planner shortcuts"
+                        description="Generate a stronger research plan without typing the guidance from scratch."
+                        actions={plannerQuickActions}
+                        disabled={isPlanning}
+                        onRun={onRunQuickAction}
+                      />
+                      <TaskPlanningSurface
+                        context={planningContext}
+                        contextLoading={planningContextLoading}
+                        draft={effectiveDraft}
+                        isPlanning={isPlanning}
+                        planningInput={planningInput}
+                        onPlanningInputChange={onPlanningInputChange}
+                        onGenerate={onGeneratePlan}
+                        selectedMode={selectedPlanMode}
+                        selectedOptionId={selectedPlanOptionId}
+                        onSelectOption={onSelectPlanOption}
+                        customInstruction={customPlanInstruction}
+                        onCustomInstructionChange={onCustomPlanInstructionChange}
+                      />
+                    </div>
                   ) : null}
 
                   {detailTab === 'activity' ? (
-                    <section className="tasks-detail-card tasks-detail-card--timeline">
-                      <header className="tasks-detail-card__header">
-                        <div>
-                          <h3>Execution timeline</h3>
-                          <p>Chat with the task while the board stays visible.</p>
-                        </div>
-                      </header>
+                    <div className="tasks-detail__stack">
+                      <TaskQuickActionsPanel
+                        title="Next moves"
+                        description="Keep the run human-in-the-loop while steering the final output toward a send-ready result."
+                        actions={executionQuickActions}
+                        disabled={isSendingMessage}
+                        onRun={onRunQuickAction}
+                      />
+                      <section className="tasks-detail-card tasks-detail-card--timeline">
+                        <header className="tasks-detail-card__header">
+                          <div>
+                            <h3>Execution timeline</h3>
+                            <p>Chat with the task while the board stays visible.</p>
+                          </div>
+                        </header>
 
-                      {threadHasMore ? (
-                        <button type="button" className="tasks-soft-button tasks-load-older" onClick={onLoadOlderThread} disabled={threadLoadingOlder}>
-                          {threadLoadingOlder ? 'Loading...' : 'Load older'}
-                        </button>
-                      ) : null}
-                      {threadLoading ? <p className="tasks-empty-copy">Loading thread...</p> : null}
-                      {!threadLoading && threadMessages.length === 0 ? (
-                        <p className="tasks-empty-copy">No task messages yet. Start execution or send a follow-up.</p>
-                      ) : null}
-                      <div ref={messagesViewportRef} className="tasks-detail__timeline-scroll">
-                        <TaskMessageTimeline messages={threadMessages} hideStreamingAssistant={selectedRunning} />
-                      </div>
-                    </section>
+                        {threadHasMore ? (
+                          <button type="button" className="tasks-soft-button tasks-load-older" onClick={onLoadOlderThread} disabled={threadLoadingOlder}>
+                            {threadLoadingOlder ? 'Loading...' : 'Load older'}
+                          </button>
+                        ) : null}
+                        {threadLoading ? <p className="tasks-empty-copy">Loading thread...</p> : null}
+                        {!threadLoading && threadMessages.length === 0 ? (
+                          <p className="tasks-empty-copy">No task messages yet. Start execution or send a follow-up.</p>
+                        ) : null}
+                        <div ref={messagesViewportRef} className="tasks-detail__timeline-scroll">
+                          <TaskMessageTimeline messages={threadMessages} hideStreamingAssistant={selectedRunning} />
+                        </div>
+                      </section>
+                    </div>
                   ) : null}
                 </div>
 
@@ -1327,9 +1511,10 @@ export default function TasksWorkspaceScreen({
                     {isSendingMessage ? (isTaskPreStart ? 'Planning...' : 'Sending...') : isTaskPreStart ? 'Plan' : 'Send'}
                   </button>
                 </footer>
+                </aside>
               </>
-            </aside>
-          ) : null}
+            ) : null}
+          </section>
         </section>
       </main>
     </div>

@@ -665,15 +665,20 @@ export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
 
       <main className="granola-main granola-main--docs">
         <div className="docs-shell">
-          <aside className="docs-sidebar" aria-label="Docs navigator">
-            <div className="docs-sidebar__header">
-              <h1>{home?.workspaceTitle ?? 'Docs'}</h1>
-              <button type="button" className="docs-sidebar__icon" aria-label="Create document" onClick={() => void handleCreateDocument()}>
+          <aside className="docs-sidebar workspace-sidebar" aria-label="Docs navigator">
+            <div className="docs-sidebar__header workspace-sidebar__header">
+              <h1 className="workspace-sidebar__title">{home?.workspaceTitle ?? 'Docs'}</h1>
+              <button
+                type="button"
+                className="docs-sidebar__icon workspace-sidebar__action"
+                aria-label="Create document"
+                onClick={() => void handleCreateDocument()}
+              >
                 <PlusIcon className="glyph-14" />
               </button>
             </div>
 
-            <label className="docs-sidebar__search">
+            <label className="docs-sidebar__search workspace-sidebar__search">
               <SearchIcon className="glyph-14" />
               <input
                 type="search"
@@ -685,71 +690,77 @@ export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
               />
             </label>
 
-            <div className="docs-sidebar__sections">
-              {(home?.sections ?? []).map((section) => (
-                <button
-                  key={section.id}
-                  type="button"
-                  className={cx('docs-sidebar__section', activeSection === section.id && 'is-active')}
-                  aria-label={section.label}
-                  onClick={() => {
-                    setActiveSection(section.id);
-                    setActiveDocument(null);
-                    setDocumentError(null);
-                  }}
-                >
-                  <span className="docs-sidebar__section-icon">
-                    {section.id === 'home' ? <HomeIcon className="glyph-14" /> : section.id === 'drive' ? <FolderIcon className="glyph-14" /> : <FileIcon className="glyph-14" />}
-                  </span>
-                  <span className="docs-sidebar__section-copy">
-                    <strong>{section.label}</strong>
-                    <small>{section.description}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
+            <div className="docs-sidebar__scroll workspace-sidebar__scroll">
+              <div className="docs-sidebar__sections workspace-sidebar__stack">
+                {(home?.sections ?? []).map((section) => (
+                  <button
+                    key={section.id}
+                    type="button"
+                    className={cx('docs-sidebar__section workspace-sidebar__item', activeSection === section.id && 'is-active')}
+                    aria-label={section.label}
+                    onClick={() => {
+                      setActiveSection(section.id);
+                      setActiveDocument(null);
+                      setDocumentError(null);
+                    }}
+                  >
+                    <span className="docs-sidebar__section-icon">
+                      {section.id === 'home' ? <HomeIcon className="glyph-14" /> : section.id === 'drive' ? <FolderIcon className="glyph-14" /> : <FileIcon className="glyph-14" />}
+                    </span>
+                    <span className="docs-sidebar__section-copy workspace-sidebar__item-copy">
+                      <strong>{section.label}</strong>
+                      <small>{section.description}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
 
-            <div className="docs-sidebar__group">
-              <div className="docs-sidebar__group-label">Pinned Wiki</div>
-              {pinnedWiki.length === 0 ? <p className="docs-sidebar__empty">Create or pin a wiki space</p> : null}
-              {pinnedWiki.map((document) => (
-                <button
-                  key={document.docId}
-                  type="button"
-                  className="docs-sidebar__library-item"
-                  onClick={() => {
-                    void openDocument(document.docId);
-                  }}
-                >
-                  <span className={cx('docs-doc-icon', `is-${document.iconTone}`)}>
-                    <FileIcon className="glyph-14" />
-                  </span>
-                  <span>{document.title}</span>
-                </button>
-              ))}
-            </div>
+              <div className="docs-sidebar__group workspace-sidebar__stack">
+                <div className="docs-sidebar__group-label workspace-sidebar__label">Pinned Wiki</div>
+                {pinnedWiki.length === 0 ? <p className="docs-sidebar__empty workspace-sidebar__empty">Create or pin a wiki space</p> : null}
+                {pinnedWiki.map((document) => (
+                  <button
+                    key={document.docId}
+                    type="button"
+                    className={cx('docs-sidebar__library-item workspace-sidebar__item', activeDocument?.docId === document.docId && 'is-active')}
+                    onClick={() => {
+                      void openDocument(document.docId);
+                    }}
+                  >
+                    <span className={cx('docs-doc-icon', `is-${document.iconTone}`)}>
+                      <FileIcon className="glyph-14" />
+                    </span>
+                    <span className="docs-sidebar__library-copy workspace-sidebar__item-copy">
+                      <strong>{document.title}</strong>
+                    </span>
+                  </button>
+                ))}
+              </div>
 
-            <div className="docs-sidebar__group">
-              <div className="docs-sidebar__group-label">My Document Library</div>
-              {sidebarLibrary.map((document) => (
-                <button
-                  key={document.docId}
-                  type="button"
-                  className="docs-sidebar__library-item"
-                  onClick={() => {
-                    void openDocument(document.docId);
-                  }}
-                >
-                  <span className={cx('docs-doc-icon', `is-${document.iconTone}`)}>
-                    <FileIcon className="glyph-14" />
-                  </span>
-                  <span>{document.title}</span>
-                </button>
-              ))}
+              <div className="docs-sidebar__group workspace-sidebar__stack">
+                <div className="docs-sidebar__group-label workspace-sidebar__label">My Document Library</div>
+                {sidebarLibrary.map((document) => (
+                  <button
+                    key={document.docId}
+                    type="button"
+                    className={cx('docs-sidebar__library-item workspace-sidebar__item', activeDocument?.docId === document.docId && 'is-active')}
+                    onClick={() => {
+                      void openDocument(document.docId);
+                    }}
+                  >
+                    <span className={cx('docs-doc-icon', `is-${document.iconTone}`)}>
+                      <FileIcon className="glyph-14" />
+                    </span>
+                    <span className="docs-sidebar__library-copy workspace-sidebar__item-copy">
+                      <strong>{document.title}</strong>
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
           </aside>
 
-          <section className="docs-main">
+          <section className="docs-main workspace-body">
             {documentLoading ? <p className="docs-state">Loading document...</p> : null}
             {documentError && !activeDocument ? <p className="docs-state is-error">{documentError}</p> : null}
 

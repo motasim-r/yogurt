@@ -23,7 +23,6 @@ import {
   PeopleIcon,
   PlusIcon,
   PlanPlusIcon,
-  RecipesIcon,
   SearchIcon,
   SharedIcon,
   SlidersIcon,
@@ -221,17 +220,15 @@ function GlobalSidebar({
   sidebarActionLabel,
   sidebarActionDisabled,
   onSidebarAction,
-  compactWorkspace,
 }: {
   activeTab: MainTab;
   onSelectTab: (tab: MainTab) => void;
   sidebarActionLabel: string;
   sidebarActionDisabled: boolean;
   onSidebarAction: () => void;
-  compactWorkspace?: boolean;
 }) {
   return (
-    <aside className={cx('granola-sidebar', compactWorkspace && 'is-compact-workspace')}>
+    <aside className="granola-sidebar">
       <div className="sidebar-top" />
 
       <div className="sidebar-search-stack">
@@ -251,7 +248,6 @@ function GlobalSidebar({
         <SidebarItem icon={<ChatIcon className="glyph-16" />} label="Chat" active={activeTab === 'chat'} onClick={() => onSelectTab('chat')} />
         <SidebarItem icon={<FolderIcon className="glyph-16" />} label="Docs" active={activeTab === 'docs'} onClick={() => onSelectTab('docs')} />
         <SidebarItem icon={<FileIcon className="glyph-16" />} label="Tasks" active={activeTab === 'tasks'} onClick={() => onSelectTab('tasks')} />
-        <SidebarItem icon={<SparkleIcon className="glyph-16" />} label="AI" active={activeTab === 'ai'} onClick={() => onSelectTab('ai')} />
       </nav>
 
       <section className="sidebar-spaces" aria-label="Spaces">
@@ -286,8 +282,8 @@ function GlobalSidebar({
 
       <div className="sidebar-footer-tools">
         <div className="sidebar-footer-icons">
-          <IconButton ariaLabel="Recipes">
-            <RecipesIcon className="glyph-16" />
+          <IconButton ariaLabel="AI" active={activeTab === 'ai'} onClick={() => onSelectTab('ai')}>
+            <SparkleIcon className="glyph-16" />
           </IconButton>
           <IconButton ariaLabel="People">
             <PeopleIcon className="glyph-16" />
@@ -1509,15 +1505,15 @@ function GranolaChatPane({
 
       <main className="granola-main granola-main--chat">
         <div className="granola-chat-shell">
-          <aside className="granola-chat-nav" aria-label="Chat navigator">
-            <div className="granola-chat-nav__header">
-              <h1>Chats</h1>
-              <button type="button" className="granola-chat-nav__new" aria-label="Start new AI chat" onClick={handleCreateAiChat}>
+          <aside className="granola-chat-nav workspace-sidebar" aria-label="Chat navigator">
+            <div className="granola-chat-nav__header workspace-sidebar__header">
+              <h1 className="workspace-sidebar__title">Chats</h1>
+              <button type="button" className="granola-chat-nav__new workspace-sidebar__action" aria-label="Start new AI chat" onClick={handleCreateAiChat}>
                 <PlusIcon className="glyph-14" />
               </button>
             </div>
 
-            <label className="granola-chat-nav__search">
+            <label className="granola-chat-nav__search workspace-sidebar__search">
               <SearchIcon className="glyph-14" />
               <input
                 type="search"
@@ -1529,7 +1525,7 @@ function GranolaChatPane({
               />
             </label>
 
-            <div className="granola-chat-nav__label">Assistant</div>
+            <div className="granola-chat-nav__label workspace-sidebar__label">Assistant</div>
             <button
               type="button"
               className={cx('granola-chat-nav__row granola-chat-nav__row--ai', activeSurface.kind === 'ai' && 'is-active')}
@@ -1545,10 +1541,10 @@ function GranolaChatPane({
               <span className="granola-chat-nav__row-badge">Auto</span>
             </button>
 
-            <div className="granola-chat-nav__label">Conversations</div>
-            <div className="granola-chat-nav__list">
+            <div className="granola-chat-nav__label workspace-sidebar__label">Conversations</div>
+            <div className="granola-chat-nav__list workspace-sidebar__scroll">
               {filteredTeamThreads.length === 0 ? (
-                <p className="granola-chat-nav__empty">No chats match your search.</p>
+                <p className="granola-chat-nav__empty workspace-sidebar__empty">No chats match your search.</p>
               ) : null}
               {filteredTeamThreads.map((thread) => (
                 <button
@@ -1586,7 +1582,7 @@ function GranolaChatPane({
             </div>
           </aside>
 
-          <div className="granola-chat-shell__content">
+          <div className="granola-chat-shell__content workspace-body">
             {activeSurface.kind === 'ai' ? (
               <AiChatView
                 chatHome={chatHome}
@@ -2359,6 +2355,7 @@ export default function GranolaHomeScreen() {
       return;
     }
     const instruction = planningInput.trim() || 'Generate 2-3 concise plan options with one recommended option.';
+    setPlanningInput('');
     setIsPlanning(true);
     try {
       const result = await granolaClient.tasksPlanMessage(selectedTodoId, instruction);
@@ -2372,7 +2369,6 @@ export default function GranolaHomeScreen() {
         setSelectedPlanMode('preset');
         setSelectedPlanOptionId(result.plan.recommendedOptionId);
       }
-      setPlanningInput('');
     } catch (error) {
       setTasksError(error instanceof Error ? error.message : 'Unable to generate a plan.');
     } finally {
@@ -2380,6 +2376,61 @@ export default function GranolaHomeScreen() {
       await fetchTasksFeed();
     }
   }, [fetchTasksFeed, isPlanning, planningInput, selectedTodoId]);
+
+  const handleRunPlannerInstruction = useCallback(
+    async (todoId: string, instruction: string) => {
+      const trimmed = instruction.trim();
+      if (!trimmed || isPlanning) {
+        return;
+      }
+      setPlanningInput('');
+      setIsPlanning(true);
+      try {
+        const result = await granolaClient.tasksPlanMessage(todoId, trimmed);
+        if (!result.ok && result.message) {
+          setTasksError(result.message);
+        } else {
+          setTasksError(null);
+        }
+        if (result.plan) {
+          setPlanningDraft(result.plan);
+          setSelectedPlanMode('preset');
+          setSelectedPlanOptionId(result.plan.recommendedOptionId);
+        }
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to generate a plan.');
+      } finally {
+        setIsPlanning(false);
+        await fetchTasksFeed();
+      }
+    },
+    [fetchTasksFeed, isPlanning],
+  );
+
+  const handleRunTaskThreadInstruction = useCallback(
+    async (todoId: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || isSendingMessage) {
+        return;
+      }
+      setIsSendingMessage(true);
+      setComposerText('');
+      try {
+        const result = await granolaClient.tasksSendMessage(todoId, trimmed);
+        if (!result.ok && result.message) {
+          setTasksError(result.message);
+        } else {
+          setTasksError(null);
+        }
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to send message.');
+      } finally {
+        setIsSendingMessage(false);
+        await fetchTasksFeed();
+      }
+    },
+    [fetchTasksFeed, isSendingMessage],
+  );
 
   const handleSendMessage = useCallback(async () => {
     if (!selectedTodoId || isSendingMessage) {
@@ -2393,17 +2444,8 @@ export default function GranolaHomeScreen() {
     setComposerText('');
     try {
       if (isTaskPreStart) {
-        const result = await granolaClient.tasksPlanMessage(selectedTodoId, trimmed);
-        if (!result.ok && result.message) {
-          setTasksError(result.message);
-        } else {
-          setTasksError(null);
-        }
-        if (result.plan) {
-          setPlanningDraft(result.plan);
-          setSelectedPlanMode('preset');
-          setSelectedPlanOptionId(result.plan.recommendedOptionId);
-        }
+        setIsSendingMessage(false);
+        await handleRunPlannerInstruction(selectedTodoId, trimmed);
         return;
       }
       const result = await granolaClient.tasksSendMessage(selectedTodoId, trimmed);
@@ -2418,7 +2460,21 @@ export default function GranolaHomeScreen() {
       setIsSendingMessage(false);
       await fetchTasksFeed();
     }
-  }, [composerText, fetchTasksFeed, isSendingMessage, isTaskPreStart, selectedTodoId]);
+  }, [composerText, fetchTasksFeed, handleRunPlannerInstruction, isSendingMessage, isTaskPreStart, selectedTodoId]);
+
+  const handleTaskQuickAction = useCallback(
+    async (input: { kind: 'planner' | 'message'; text: string }) => {
+      if (!selectedTodoId) {
+        return;
+      }
+      if (input.kind === 'planner') {
+        await handleRunPlannerInstruction(selectedTodoId, input.text);
+        return;
+      }
+      await handleRunTaskThreadInstruction(selectedTodoId, input.text);
+    },
+    [handleRunPlannerInstruction, handleRunTaskThreadInstruction, selectedTodoId],
+  );
 
   const handleCancelRun = useCallback(async () => {
     if (!selectedTodoId) {
@@ -2627,7 +2683,6 @@ export default function GranolaHomeScreen() {
       onSelectTab={showPrimaryTab}
       sidebarActionLabel={sidebarActionLabel}
       sidebarActionDisabled={isConnecting || isSyncing}
-      compactWorkspace={activeTab === 'tasks'}
       onSidebarAction={() => {
         void handleSidebarGranolaAction();
       }}
@@ -2793,6 +2848,9 @@ export default function GranolaHomeScreen() {
         void handleSummarizeTask();
       }}
       isSummarizingTask={isSummarizingTask}
+      onRunQuickAction={(input) => {
+        void handleTaskQuickAction(input);
+      }}
     />
   );
 }

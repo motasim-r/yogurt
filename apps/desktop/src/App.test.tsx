@@ -1028,7 +1028,7 @@ describe('App task copilot', () => {
     await screen.findByRole('heading', { name: 'Tasks' });
     expect(screen.getByLabelText('Tasks workspace')).toBeInTheDocument();
     expect(screen.queryByRole('complementary', { name: 'Task detail' })).not.toBeInTheDocument();
-    expect(document.querySelector('.granola-sidebar')).toHaveClass('is-compact-workspace');
+    expect(document.querySelector('.granola-sidebar')).toHaveClass('granola-sidebar');
   });
 
   it('falls back to the static upcoming card when the home feed has no future meeting', async () => {
@@ -1365,7 +1365,7 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click(screen.getByRole('button', { name: /Close task details/i }));
+    await user.click(screen.getByRole('button', { name: /Back to all tasks/i }));
 
     await waitFor(() => {
       expect(screen.queryByRole('complementary', { name: 'Task detail' })).not.toBeInTheDocument();
@@ -1394,10 +1394,25 @@ describe('App task copilot', () => {
 
     const composer = await screen.findByPlaceholderText(/Message task copilot/i);
     await user.type(composer, 'Continue with competitor research');
-    await user.click(screen.getByRole('button', { name: /Send/i }));
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
 
     await waitFor(() => {
       expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith('todo-2', 'Continue with competitor research');
+    });
+  });
+
+  it('runs activity quick actions through the task chat pipeline', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
+
+    await user.click(screen.getByRole('button', { name: /Draft follow-up/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+        'todo-2',
+        expect.stringContaining('follow-up message'),
+      );
     });
   });
 
@@ -1414,7 +1429,7 @@ describe('App task copilot', () => {
       expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
     });
 
-    expect(await screen.findByText(/^Recommended$/i, { selector: 'span' })).toBeInTheDocument();
+    expect(screen.getAllByText(/^Recommended$/i, { selector: 'span' }).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /^Custom plan$/i })).toBeInTheDocument();
     const optionCards = document.querySelectorAll('.tasks-plan-option');
     expect(optionCards).toHaveLength(4);
@@ -1435,6 +1450,22 @@ describe('App task copilot', () => {
       expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalledWith('todo-1', 'Prioritize speed and include links');
     });
     expect(granolaClientMock.tasksSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('runs planner quick actions through the planning API for pre-start tasks', async () => {
+    const user = userEvent.setup();
+    state.threads.set('todo-1', []);
+    render(<App />);
+    await openTasksWorkspace(user);
+
+    await user.click(screen.getByRole('button', { name: /Research operator/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalledWith(
+        'todo-1',
+        expect.stringContaining('Plan this as a research operator'),
+      );
+    });
   });
 
   it('starts with selected recommended preset plan payload', async () => {
@@ -1755,9 +1786,9 @@ describe('App task copilot', () => {
 
     await user.click(screen.getByRole('button', { name: 'AI' }));
 
-    expect(await screen.findByRole('heading', { name: 'AI Settings' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'AI' })).toBeInTheDocument();
     expect(screen.getAllByText(/openai-codex/i).length).toBeGreaterThan(0);
-    expect(screen.getByText('Codex / Auto')).toBeInTheDocument();
+    expect(screen.getAllByText('Codex / Auto').length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole('button', { name: /Reconnect Codex/i }));
     await waitFor(() => {
