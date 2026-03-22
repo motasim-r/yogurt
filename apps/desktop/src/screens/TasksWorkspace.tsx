@@ -1143,18 +1143,6 @@ export default function TasksWorkspaceScreen({
                       AI Brief
                     </button>
                   </div>
-                  {!isTaskPreStart ? (
-                    <button
-                      type="button"
-                      className={cx('tasks-icon-button tasks-detail__focus-toggle', focusMode && 'is-active')}
-                      aria-label={focusMode ? 'Exit focus mode' : 'Enter focus mode'}
-                      onClick={() => {
-                        setFocusMode((current) => !current);
-                      }}
-                    >
-                      <ExpandIcon className="glyph-14" />
-                    </button>
-                  ) : null}
                 </div>
 
                 {activityLabel ? (
@@ -1372,6 +1360,18 @@ export default function TasksWorkspaceScreen({
                             <h3>Execution timeline</h3>
                             <p>{focusMode ? 'Expanded view for reading, editing, and driving the run forward.' : 'Chat with the task while the board stays visible.'}</p>
                           </div>
+                          {!isTaskPreStart ? (
+                            <button
+                              type="button"
+                              className={cx('tasks-icon-button tasks-detail__focus-toggle', focusMode && 'is-active')}
+                              aria-label={focusMode ? 'Exit focus mode' : 'Enter focus mode'}
+                              onClick={() => {
+                                setFocusMode((current) => !current);
+                              }}
+                            >
+                              <ExpandIcon className="glyph-14" />
+                            </button>
+                          ) : null}
                         </header>
 
                         {threadHasMore ? (

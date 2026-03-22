@@ -4955,6 +4955,8 @@ svg {
 }
 
 .tasks-detail-card__header {
+  display: flex;
+  justify-content: space-between;
   align-items: flex-start;
 }
 
@@ -6621,8 +6623,20 @@ svg {
 .tasks-detail__tabbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
+}
+
+.tasks-detail-card__header {
+  gap: 12px;
+}
+
+.tasks-detail-card__header > div:first-child {
+  min-width: 0;
+}
+
+.tasks-detail__focus-toggle {
+  margin-left: auto;
 }
 
 .tasks-detail__focus-toggle.is-active {
