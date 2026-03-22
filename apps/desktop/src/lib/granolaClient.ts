@@ -731,6 +731,84 @@ const browserFallback: GranolaAPI = {
       ],
     };
   },
+  async tasksGetPlanSuggestions(todoId: string) {
+    const now = new Date().toISOString();
+    return {
+      todoId,
+      phase: 'planning' as const,
+      generatedAt: now,
+      source: 'fallback' as const,
+      actions: [
+        {
+          id: 'browser-plan-fast',
+          phase: 'planning' as const,
+          label: 'Fast research pass',
+          summary: 'Start with a quick evidence pass and refine from there.',
+          instruction: 'Start with a fast research pass, capture high-signal findings, then refine only where needed.',
+          recommended: true,
+          actionMode: 'start' as const,
+          editable: true,
+          steps: ['Scan strong sources', 'Capture the best findings', 'Draft a concise answer'],
+          reason: 'Best default when speed matters.',
+        },
+        {
+          id: 'browser-plan-deep',
+          phase: 'planning' as const,
+          label: 'Evidence-first validation',
+          summary: 'Prioritize source quality before proposing actions.',
+          instruction: 'Validate the highest-impact claims first, then deliver recommendations with stronger evidence.',
+          recommended: false,
+          actionMode: 'start' as const,
+          editable: true,
+          steps: ['List key claims', 'Verify evidence', 'Draft structured findings'],
+          reason: 'Best when confidence matters more than speed.',
+        },
+      ],
+    };
+  },
+  async tasksGetNextMoveSuggestions(todoId: string) {
+    const now = new Date().toISOString();
+    return {
+      todoId,
+      phase: 'next_move' as const,
+      generatedAt: now,
+      source: 'fallback' as const,
+      actions: [
+        {
+          id: 'browser-next-refine',
+          phase: 'next_move' as const,
+          label: 'Refine the strongest findings',
+          summary: 'Tighten the current work into clearer recommendations.',
+          instruction: 'Refine the current findings into a tighter recommendation set with clearer tradeoffs and next steps.',
+          recommended: true,
+          actionMode: 'message' as const,
+          editable: true,
+          reason: 'Safe default when the task already has output.',
+        },
+        {
+          id: 'browser-next-draft',
+          phase: 'next_move' as const,
+          label: 'Draft the follow-up',
+          summary: 'Turn the current output into a concise outward-facing draft.',
+          instruction: 'Turn the current findings into a concise follow-up draft that is ready for human review.',
+          recommended: false,
+          actionMode: 'message' as const,
+          editable: true,
+          reason: 'Useful when the next natural step is communication.',
+        },
+      ],
+    };
+  },
+  async tasksExecuteSuggestion(_todoId: string, input: { phase: 'planning' | 'next_move'; actionId: string; editedInstruction?: string | null }) {
+    return {
+      ok: false,
+      queued: false,
+      message:
+        input.phase === 'planning'
+          ? 'Task execution is only available in Electron runtime.'
+          : 'Task follow-up execution is only available in Electron runtime.',
+    };
+  },
   async tasksPlanMessage(todoId: string, instruction: string) {
     const now = new Date().toISOString();
     const guidanceUsed = instruction.trim() || 'Generate the best task plan.';
@@ -747,6 +825,7 @@ const browserFallback: GranolaAPI = {
             summary: 'Collect top findings quickly, then refine.',
             steps: ['Scan primary sources', 'Capture key findings', 'Flag gaps for follow-up'],
             why: 'Best for speed when context is limited.',
+            launchInstruction: 'Start with a fast research pass, collect top findings quickly, and refine only where needed.',
             recommended: true,
           },
           {
@@ -755,6 +834,7 @@ const browserFallback: GranolaAPI = {
             summary: 'Validate each claim with stronger references.',
             steps: ['Map claims to sources', 'Verify assumptions', 'Draft structured output'],
             why: 'Best when quality and defensibility matter most.',
+            launchInstruction: 'Start with an evidence-first pass, validate each important claim, then draft a structured output.',
             recommended: false,
           },
         ],

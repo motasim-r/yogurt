@@ -44,13 +44,17 @@ function normalizePlanOption(raw: unknown, index: number): TaskPlanOption | null
   const title = typeof raw.title === 'string' ? raw.title.trim() : '';
   const summary = typeof raw.summary === 'string' ? raw.summary.trim() : '';
   const why = typeof raw.why === 'string' ? raw.why.trim() : '';
+  const launchInstruction =
+    typeof raw.launchInstruction === 'string' && raw.launchInstruction.trim()
+      ? raw.launchInstruction.trim()
+      : summary || title;
   const steps = Array.isArray(raw.steps)
     ? raw.steps
         .filter((item): item is string => typeof item === 'string')
         .map((item) => item.trim())
         .filter(Boolean)
     : [];
-  if (!title || !summary || !why || steps.length === 0) {
+  if (!title || !summary || !why || !launchInstruction || steps.length === 0) {
     return null;
   }
   return {
@@ -59,6 +63,7 @@ function normalizePlanOption(raw: unknown, index: number): TaskPlanOption | null
     summary,
     steps,
     why,
+    launchInstruction,
     recommended: raw.recommended === true,
   };
 }

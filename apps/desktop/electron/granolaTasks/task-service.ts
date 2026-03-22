@@ -62,6 +62,10 @@ import type {
   TaskPlanDraft,
   TaskPlanOption,
   TaskPlanningContext,
+  TaskSuggestion,
+  TaskSuggestionActionMode,
+  TaskSuggestionDeck,
+  TaskSuggestionPhase,
   TaskStartOptions,
   TaskAssignee,
   TaskBoardColumn,
@@ -1098,6 +1102,22 @@ function normalizePlanSteps(value: unknown): string[] {
     .slice(0, 6);
 }
 
+function derivePlanLaunchInstruction(option: {
+  title: string;
+  summary: string;
+  steps: string[];
+}): string {
+  const stepsSentence = option.steps
+    .slice(0, 4)
+    .map((step) => compactSingleLineText(step, 180))
+    .filter(Boolean)
+    .join('; ');
+  return compactSingleLineText(
+    `Follow the "${option.title}" approach. ${option.summary}${stepsSentence ? ` Steps: ${stepsSentence}.` : ''}`,
+    1000,
+  );
+}
+
 function normalizePlanOptionCandidate(candidate: unknown, fallbackIndex: number): TaskPlanOption | null {
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
     return null;
@@ -1111,12 +1131,16 @@ function normalizePlanOptionCandidate(candidate: unknown, fallbackIndex: number)
   if (!title || !summary || !why || steps.length === 0) {
     return null;
   }
+  const launchInstruction =
+    compactSingleLineText(row.launchInstruction ?? row.instruction ?? row.launch_prompt ?? row.executionInstruction, 1000) ||
+    derivePlanLaunchInstruction({ title, summary, steps });
   return {
     id,
     title,
     summary,
     steps,
     why,
+    launchInstruction,
     recommended: row.recommended === true,
   };
 }
@@ -1141,6 +1165,7 @@ function fallbackPlanOptions(todo: TodoRecord, meeting: GranolaMeeting | null): 
         'Return concise findings and immediate next actions',
       ],
       why: 'Best default when speed and momentum matter.',
+      launchInstruction: `Start with a fast-path execution for ${taskFocus}. Clarify the outcome, pull high-signal evidence from ${meetingFocus}, and return concise findings with immediate next actions.`,
       recommended: true,
     },
     {
@@ -1149,6 +1174,8 @@ function fallbackPlanOptions(todo: TodoRecord, meeting: GranolaMeeting | null): 
       summary: 'Prioritize source quality and reduce risk before making recommendations.',
       steps: ['List key claims to verify', 'Cross-check claims with stronger sources', 'Present decisions with confidence levels'],
       why: 'Best when decisions are high impact or need stronger confidence.',
+      launchInstruction:
+        'Start with an evidence-first validation pass. List key claims, cross-check them with stronger sources, then present decisions with explicit confidence levels.',
       recommended: false,
     },
   ];
@@ -1160,6 +1187,8 @@ function fallbackPlanOptions(todo: TodoRecord, meeting: GranolaMeeting | null): 
       summary: 'Use meeting details and transcript context to shape a tailored plan.',
       steps: ['Extract explicit constraints from notes', 'Resolve ambiguities from transcript context', 'Build a focused execution checklist'],
       why: 'Best when the meeting context contains nuanced requirements.',
+      launchInstruction:
+        'Start with a meeting-context deep dive. Extract explicit constraints from the notes and transcript, resolve ambiguities, then build a focused execution checklist.',
       recommended: false,
     });
   }
@@ -1257,6 +1286,140 @@ function planningDraftMarkdown(draft: TaskPlanDraft): string {
   return lines.join('\n');
 }
 
+function planDraftToSuggestionDeck(draft: TaskPlanDraft, source: TaskSuggestionDeck['source']): TaskSuggestionDeck {
+  return {
+    todoId: draft.todoId,
+    phase: 'planning',
+    generatedAt: draft.generatedAt,
+    source,
+    actions: draft.options.map((option) => ({
+      id: option.id,
+      phase: 'planning',
+      label: option.title,
+      summary: option.summary,
+      instruction: option.launchInstruction,
+      recommended: option.recommended,
+      actionMode: 'start',
+      editable: true,
+      steps: option.steps,
+      reason: option.why,
+    })),
+  };
+}
+
+function normalizeSuggestionSteps(value: unknown): string[] | undefined {
+  const normalized = normalizePlanSteps(value);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeSuggestionActionMode(value: unknown, fallback: TaskSuggestionActionMode): TaskSuggestionActionMode {
+  if (value === 'start' || value === 'message') {
+    return value;
+  }
+  return fallback;
+}
+
+function normalizeSuggestionCandidate(
+  candidate: unknown,
+  index: number,
+  phase: TaskSuggestionPhase,
+  fallbackMode: TaskSuggestionActionMode,
+): TaskSuggestion | null {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return null;
+  }
+  const row = candidate as Record<string, unknown>;
+  const id = compactSingleLineText(row.id, 60) || `${phase}-${index + 1}`;
+  const label = compactSingleLineText(row.label ?? row.title ?? row.name, 120);
+  const summary = compactSingleLineText(row.summary ?? row.description ?? row.outcome, 240);
+  const instruction =
+    compactSingleLineText(row.instruction ?? row.prompt ?? row.executionInstruction ?? row.message, 1200);
+  if (!label || !summary || !instruction) {
+    return null;
+  }
+  const reason = compactSingleLineText(row.reason ?? row.why ?? row.rationale, 240) || undefined;
+  return {
+    id,
+    phase,
+    label,
+    summary,
+    instruction,
+    recommended: row.recommended === true,
+    actionMode: normalizeSuggestionActionMode(row.actionMode ?? row.mode, fallbackMode),
+    editable: row.editable !== false,
+    steps: normalizeSuggestionSteps(row.steps ?? row.actions),
+    reason,
+  };
+}
+
+function normalizeSuggestionDeck(
+  todoId: string,
+  phase: TaskSuggestionPhase,
+  parsedActions: TaskSuggestion[],
+  fallbackActions: TaskSuggestion[],
+  source: TaskSuggestionDeck['source'],
+): TaskSuggestionDeck {
+  const usedIds = new Set<string>();
+  const usedLabels = new Set<string>();
+  const actions: TaskSuggestion[] = [];
+  let recommendedId: string | null = null;
+
+  for (const candidate of [...parsedActions, ...fallbackActions]) {
+    if (actions.length >= 3) {
+      break;
+    }
+    const labelKey = candidate.label.trim().toLowerCase();
+    if (!labelKey || usedLabels.has(labelKey)) {
+      continue;
+    }
+    let id = compactSingleLineText(candidate.id, 64) || `${phase}-${actions.length + 1}`;
+    while (usedIds.has(id)) {
+      id = `${id}-x`;
+    }
+    usedIds.add(id);
+    usedLabels.add(labelKey);
+    if (!recommendedId && candidate.recommended) {
+      recommendedId = id;
+    }
+    actions.push({
+      ...candidate,
+      id,
+      phase,
+      recommended: false,
+    });
+  }
+
+  while (actions.length < 2 && fallbackActions.length > 0) {
+    const fallback = fallbackActions[actions.length % fallbackActions.length] as TaskSuggestion;
+    let id = `${fallback.id}-fallback-${actions.length + 1}`;
+    while (usedIds.has(id)) {
+      id = `${id}-x`;
+    }
+    usedIds.add(id);
+    actions.push({
+      ...fallback,
+      id,
+      phase,
+      recommended: false,
+    });
+  }
+
+  const finalRecommendedId = recommendedId && actions.some((action) => action.id === recommendedId)
+    ? recommendedId
+    : (actions[0]?.id ?? `${phase}-1`);
+
+  return {
+    todoId,
+    phase,
+    generatedAt: nowIso(),
+    source,
+    actions: actions.map((action) => ({
+      ...action,
+      recommended: action.id === finalRecommendedId,
+    })),
+  };
+}
+
 function formatMeetingContext(meeting: GranolaMeeting | null): string {
   if (!meeting) {
     return 'No cached meeting context was found for this task.';
@@ -1350,10 +1513,11 @@ function buildPlanningPrompt(
     '- Return 2 or 3 options only.',
     '- Exactly one option must be recommended=true.',
     '- Each option must include concise steps.',
+    '- Each option must include launchInstruction, a direct execution instruction ready to run.',
     '- Keep options practical and action-oriented.',
     '',
     'JSON schema:',
-    '{"options":[{"id":"string","title":"string","summary":"string","steps":["string"],"why":"string","recommended":true|false}]}',
+    '{"options":[{"id":"string","title":"string","summary":"string","steps":["string"],"why":"string","launchInstruction":"string","recommended":true|false}]}',
     '',
     'Task context:',
     objective,
@@ -1364,6 +1528,105 @@ function buildPlanningPrompt(
     'User guidance:',
     guidance,
   ].join('\n');
+}
+
+function buildNextMovePrompt(
+  todo: TodoRecord,
+  meeting: GranolaMeeting | null,
+  threadHistory: string,
+  currentState: {
+    status: string;
+    runState: string;
+    queueState: string;
+    latestStep: string;
+  },
+): string {
+  const evidence = compactMultilineText(todo.evidence, 1200);
+  const objective = [
+    `Task title: ${todo.title}`,
+    `Task description: ${todo.description || 'No description provided.'}`,
+    `Status: ${currentState.status}`,
+    `Run state: ${currentState.runState}`,
+    `Queue state: ${currentState.queueState}`,
+    `Latest public step: ${currentState.latestStep || 'None'}`,
+    evidence ? `Evidence from extraction:\n${evidence}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return [
+    'You are deciding the next best moves for an in-progress Yogurt task.',
+    'Return strict JSON only. No markdown, no prose outside JSON.',
+    '',
+    'Requirements:',
+    '- Return 2 or 3 actions only.',
+    '- Exactly one action must be recommended=true.',
+    '- Each action must include a short label, summary, instruction, and optional reason.',
+    '- instruction must be directly executable through the task runner.',
+    '- It is okay if the next move involves external communication or sending something, as long as the instruction is concrete.',
+    '- Prefer the natural next action based on the current thread and latest output, not generic follow-up ideas.',
+    '',
+    'JSON schema:',
+    '{"actions":[{"id":"string","label":"string","summary":"string","instruction":"string","reason":"string","recommended":true|false,"actionMode":"message","editable":true}]}',
+    '',
+    'Task context:',
+    objective,
+    '',
+    'Meeting context:',
+    formatMeetingContext(meeting),
+    '',
+    'Current thread history:',
+    threadHistory || '[No prior conversation]',
+  ].join('\n');
+}
+
+function fallbackNextMoveSuggestions(todo: TodoRecord, meeting: GranolaMeeting | null, threadHistory: string): TaskSuggestion[] {
+  const taskTitle = compactSingleLineText(todo.title || todo.description || 'this task', 90);
+  const meetingTitle = compactSingleLineText(meeting?.title || todo.meetingTitle || 'the meeting', 90);
+  const looksLikeOutreach = /email|outreach|follow[- ]?up|message/i.test(`${todo.title}\n${todo.description}\n${threadHistory}`);
+
+  const suggestions: TaskSuggestion[] = [
+    {
+      id: 'next-refine',
+      phase: 'next_move',
+      label: 'Tighten the current output',
+      summary: 'Turn the latest work into sharper recommendations with clear tradeoffs.',
+      instruction: `Refine the current output for ${taskTitle}. Tighten the strongest ideas, remove repetition, and end with the clearest concrete next step.`,
+      recommended: !looksLikeOutreach,
+      actionMode: 'message',
+      editable: true,
+      reason: 'Best default when the task already has useful output.',
+    },
+    {
+      id: 'next-follow-up',
+      phase: 'next_move',
+      label: looksLikeOutreach ? 'Send the outreach' : 'Draft the follow-up',
+      summary: looksLikeOutreach
+        ? 'Use the current context to prepare and send the outreach if it is ready.'
+        : 'Turn the findings into a concise external-facing follow-up.',
+      instruction: looksLikeOutreach
+        ? `Using the current findings from ${meetingTitle}, send the outreach or email if the draft is ready. If anything is missing, fill the gaps first and then complete the send.`
+        : `Turn the current findings from ${meetingTitle} into a concise follow-up draft that is ready for human review.`,
+      recommended: looksLikeOutreach,
+      actionMode: 'message',
+      editable: true,
+      reason: 'Best when the natural next step is communication.',
+    },
+  ];
+
+  suggestions.push({
+    id: 'next-gap-check',
+    phase: 'next_move',
+    label: 'Resolve the remaining gap',
+    summary: 'Check for missing information and close the highest-impact open question.',
+    instruction: `Review the current state of ${taskTitle}, identify the most important remaining gap or blocker, resolve it, and then continue the task.`,
+    recommended: false,
+    actionMode: 'message',
+    editable: true,
+    reason: 'Useful when the thread suggests something is still missing.',
+  });
+
+  return suggestions;
 }
 
 function mergeMeetingsForCache(
@@ -1558,6 +1821,10 @@ export class GranolaTaskService {
   private executionQueue: ExecutionQueueRequest[] = [];
 
   private activeExecutionTodoId: string | null = null;
+
+  private suggestionDecks = new Map<string, TaskSuggestionDeck>();
+
+  private suggestionInflight = new Map<string, Promise<TaskSuggestionDeck>>();
 
   private chatState: ChatRuntimeState = {
     loaded: false,
@@ -2372,6 +2639,10 @@ export class GranolaTaskService {
         message,
       });
     }
+    this.clearSuggestionCache(todoId, 'next_move');
+    if ((options?.messageType ?? 'default') !== 'default') {
+      this.clearSuggestionCache(todoId, 'planning');
+    }
     return message;
   }
 
@@ -2400,6 +2671,7 @@ export class GranolaTaskService {
         message: next,
       });
     }
+    this.clearSuggestionCache(todoId, 'next_move');
     return next;
   }
 
@@ -3241,7 +3513,15 @@ export class GranolaTaskService {
       clearTimeout(this.chatPersistTimer);
       this.chatPersistTimer = null;
     }
+    await Promise.allSettled([
+      this.todoState.saveChain,
+      this.chatState.saveChain,
+      this.granolaChatState.saveChain,
+      this.workspaceState.saveChain,
+    ]);
+    await this.persistTodoState();
     await this.persistChatState();
+    await this.persistGranolaChatState();
     await this.persistWorkspaceState();
 
     await this.callbackServer.close();
@@ -4077,6 +4357,32 @@ export class GranolaTaskService {
     return null;
   }
 
+  private suggestionCacheKey(todoId: string, phase: TaskSuggestionPhase): string {
+    return `${phase}:${todoId}`;
+  }
+
+  private clearSuggestionCache(todoId: string, phase?: TaskSuggestionPhase): void {
+    if (phase) {
+      const key = this.suggestionCacheKey(todoId, phase);
+      this.suggestionDecks.delete(key);
+      this.suggestionInflight.delete(key);
+      return;
+    }
+    this.clearSuggestionCache(todoId, 'planning');
+    this.clearSuggestionCache(todoId, 'next_move');
+  }
+
+  private getCachedSuggestionDeck(todoId: string, phase: TaskSuggestionPhase): TaskSuggestionDeck | null {
+    return this.suggestionDecks.get(this.suggestionCacheKey(todoId, phase)) ?? null;
+  }
+
+  private cacheSuggestionDeck(deck: TaskSuggestionDeck): TaskSuggestionDeck {
+    const key = this.suggestionCacheKey(deck.todoId, deck.phase);
+    this.suggestionDecks.set(key, deck);
+    this.suggestionInflight.delete(key);
+    return deck;
+  }
+
   private approvedPlanSummary(todoId: string, options?: TaskStartOptions): { summary: string; userLine: string } | null {
     const approved = options?.approvedPlan;
     if (!approved?.selection) {
@@ -4096,11 +4402,41 @@ export class GranolaTaskService {
 
     const optionId = compactSingleLineText(approved.selection.optionId ?? '', 120);
     if (!optionId || !latestDraft) {
-      return null;
+      const snapshot = approved.optionSnapshot;
+      if (!snapshot || compactSingleLineText(snapshot.id, 120) !== optionId) {
+        return null;
+      }
+      const steps = snapshot.steps.slice(0, 6).map((step) => `- ${step}`).join('\n');
+      const summary = [
+        `Mode: preset (${snapshot.title})`,
+        `Summary: ${snapshot.summary}`,
+        `Why: ${snapshot.why}`,
+        'Steps:',
+        steps,
+      ].join('\n');
+      return {
+        summary,
+        userLine: compactSingleLineText(snapshot.launchInstruction, 1200) || `Follow the approved preset plan: ${snapshot.title}. ${snapshot.summary}`,
+      };
     }
     const option = latestDraft.options.find((item) => item.id === optionId);
     if (!option) {
-      return null;
+      const snapshot = approved.optionSnapshot;
+      if (!snapshot || compactSingleLineText(snapshot.id, 120) !== optionId) {
+        return null;
+      }
+      const steps = snapshot.steps.slice(0, 6).map((step) => `- ${step}`).join('\n');
+      const summary = [
+        `Mode: preset (${snapshot.title})`,
+        `Summary: ${snapshot.summary}`,
+        `Why: ${snapshot.why}`,
+        'Steps:',
+        steps,
+      ].join('\n');
+      return {
+        summary,
+        userLine: compactSingleLineText(snapshot.launchInstruction, 1200) || `Follow the approved preset plan: ${snapshot.title}. ${snapshot.summary}`,
+      };
     }
     const steps = option.steps.slice(0, 6).map((step) => `- ${step}`).join('\n');
     const summary = [
@@ -4112,7 +4448,7 @@ export class GranolaTaskService {
     ].join('\n');
     return {
       summary,
-      userLine: `Follow the approved preset plan: ${option.title}. ${option.summary}`,
+      userLine: compactSingleLineText(option.launchInstruction, 1200) || `Follow the approved preset plan: ${option.title}. ${option.summary}`,
     };
   }
 
@@ -4203,6 +4539,95 @@ export class GranolaTaskService {
         usedFallback: true,
         note: safeErrorMessage(error),
       };
+    }
+  }
+
+  private async generateNextMoveDeck(todo: TodoRecord, meeting: GranolaMeeting | null): Promise<TaskSuggestionDeck> {
+    const threadHistory = this.threadHistoryForPrompt(todo.todoId, 14);
+    const fallback = fallbackNextMoveSuggestions(todo, meeting, threadHistory);
+    const executor = await this.refreshExecutorState();
+
+    if (executor.state !== 'connected') {
+      return normalizeSuggestionDeck(todo.todoId, 'next_move', [], fallback, 'fallback');
+    }
+
+    const runHandle = this.ironclaw.startRun({
+      prompt: buildNextMovePrompt(todo, meeting, threadHistory, {
+        status: todo.status,
+        runState: todo.runState,
+        queueState: this.todoQueueState(todo.todoId),
+        latestStep: todo.latestPublicStep ?? '',
+      }),
+      agentId: this.ironclawAgentId,
+      sessionKey: `${this.buildExecutionSessionKey(todo.todoId, randomUUID())}:next-moves`,
+      lane: this.executionLane(),
+      thinking: 'minimal',
+      onEvent: () => {
+        // Suggestion generation is synchronous from the renderer's perspective.
+      },
+    });
+
+    try {
+      const result = await withTimeout(
+        runHandle.done,
+        this.liveRequestTimeoutMs * 2,
+        'Next-move generation timed out. Falling back to template actions.',
+      );
+      const responseText = String(result.finalText || result.summary || '').trim();
+      const parsed =
+        parseJsonObjectStrict(responseText) ??
+        extractJsonObjectFromFence(responseText) ??
+        extractFirstJsonObject(responseText);
+      const candidatesRaw = Array.isArray(parsed?.actions)
+        ? parsed.actions
+        : Array.isArray(parsed?.options)
+          ? parsed.options
+          : [];
+      const parsedActions = candidatesRaw
+        .map((item, index) => normalizeSuggestionCandidate(item, index, 'next_move', 'message'))
+        .filter((item): item is TaskSuggestion => item !== null);
+      const source: TaskSuggestionDeck['source'] = parsedActions.length >= 2 ? 'ai' : 'fallback';
+      return normalizeSuggestionDeck(todo.todoId, 'next_move', parsedActions, fallback, source);
+    } catch {
+      return normalizeSuggestionDeck(todo.todoId, 'next_move', [], fallback, 'fallback');
+    }
+  }
+
+  private async getOrGenerateSuggestionDeck(todoId: string, phase: TaskSuggestionPhase): Promise<TaskSuggestionDeck> {
+    const cached = this.getCachedSuggestionDeck(todoId, phase);
+    if (cached) {
+      return cached;
+    }
+
+    const key = this.suggestionCacheKey(todoId, phase);
+    const inflight = this.suggestionInflight.get(key);
+    if (inflight) {
+      return await inflight;
+    }
+
+    const todo = this.findTodo(todoId);
+    if (!todo) {
+      throw new Error('Task not found.');
+    }
+    const meeting = this.cacheState.meetings.find((item) => item.id === todo.meetingId) ?? null;
+
+    const promise = (async () => {
+      if (phase === 'planning') {
+        const latestDraft = this.latestPlanningDraft(todoId);
+        if (latestDraft) {
+          return this.cacheSuggestionDeck(planDraftToSuggestionDeck(latestDraft, 'ai'));
+        }
+        const generated = await this.generatePlanDraft(todo, meeting, 'Generate 2-3 concise start options with one recommended option.');
+        return this.cacheSuggestionDeck(planDraftToSuggestionDeck(generated.draft, generated.usedFallback ? 'fallback' : 'ai'));
+      }
+      return this.cacheSuggestionDeck(await this.generateNextMoveDeck(todo, meeting));
+    })();
+
+    this.suggestionInflight.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      this.suggestionInflight.delete(key);
     }
   }
 
@@ -5013,6 +5438,71 @@ export class GranolaTaskService {
     };
   }
 
+  async tasksGetPlanSuggestions(todoId: string): Promise<TaskSuggestionDeck> {
+    return await this.getOrGenerateSuggestionDeck(todoId, 'planning');
+  }
+
+  async tasksGetNextMoveSuggestions(todoId: string): Promise<TaskSuggestionDeck> {
+    return await this.getOrGenerateSuggestionDeck(todoId, 'next_move');
+  }
+
+  async tasksExecuteSuggestion(
+    todoId: string,
+    input: { phase: TaskSuggestionPhase; actionId: string; editedInstruction?: string | null },
+  ): Promise<{ ok: boolean; queued?: boolean; runId?: string; message?: string }> {
+    const todo = this.findTodo(todoId);
+    if (!todo) {
+      return {
+        ok: false,
+        queued: false,
+        message: 'Task not found.',
+      };
+    }
+
+    const deck = await this.getOrGenerateSuggestionDeck(todoId, input.phase);
+    const action = deck.actions.find((item) => item.id === input.actionId);
+    if (!action) {
+      return {
+        ok: false,
+        queued: false,
+        message: 'Suggestion not found.',
+      };
+    }
+
+    const editedInstruction = compactSingleLineText(input.editedInstruction ?? '', 1200);
+    const instructionToRun = editedInstruction || action.instruction;
+
+    this.clearSuggestionCache(todoId, input.phase);
+    if (input.phase === 'planning') {
+      return await this.tasksStart(todoId, {
+        approvedPlan: editedInstruction
+          ? {
+              selection: {
+                mode: 'custom',
+                customInstruction: editedInstruction,
+              },
+            }
+          : {
+              selection: {
+                mode: 'preset',
+                optionId: action.id,
+              },
+              optionSnapshot: {
+                id: action.id,
+                title: action.label,
+                summary: action.summary,
+                why: action.reason || 'Generated from task context.',
+                steps: action.steps ?? [],
+                launchInstruction: action.instruction,
+                recommended: action.recommended,
+              },
+            },
+      });
+    }
+
+    return await this.tasksSendMessage(todoId, instructionToRun);
+  }
+
   async tasksPlanMessage(todoId: string, instruction: string): Promise<{ ok: boolean; plan?: TaskPlanDraft; message?: string }> {
     const todo = this.findTodo(todoId);
     if (!todo) {
@@ -5032,6 +5522,7 @@ export class GranolaTaskService {
         messageType: 'planning_user',
       });
     });
+    this.clearSuggestionCache(todoId, 'planning');
 
     let generated: { draft: TaskPlanDraft; usedFallback: boolean; note?: string };
     try {
@@ -5051,6 +5542,7 @@ export class GranolaTaskService {
       });
     });
     this.emitFeedUpdated();
+    this.cacheSuggestionDeck(planDraftToSuggestionDeck(generated.draft, generated.usedFallback ? 'fallback' : 'ai'));
 
     return {
       ok: true,
@@ -5086,6 +5578,7 @@ export class GranolaTaskService {
         runId: todo.runId,
       });
     });
+    this.clearSuggestionCache(todoId, 'next_move');
     this.emitFeedUpdated();
 
     return await this.queueExecutionRequest(
@@ -5124,6 +5617,7 @@ export class GranolaTaskService {
     await this.withChatStateWrite(async () => {
       this.chatState.threads[todoId] = [];
     });
+    this.clearSuggestionCache(todoId);
     this.emitFeedUpdated(true);
     return {
       ok: true,
@@ -5158,6 +5652,7 @@ export class GranolaTaskService {
         runId: todo.runId,
       });
     });
+    this.clearSuggestionCache(todoId);
     this.emitFeedUpdated();
 
     const queued = await this.queueExecutionRequest(

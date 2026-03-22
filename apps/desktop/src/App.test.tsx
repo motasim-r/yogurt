@@ -12,6 +12,7 @@ import type {
   TaskChatMessage,
   TaskPlanDraft,
   TaskPlanningContext,
+  TaskSuggestionDeck,
   TasksWorkspace,
   TasksFeed,
   TasksRealtimeEvent,
@@ -434,6 +435,7 @@ const {
         summary: 'Run a focused pass to generate quick, actionable output.',
         steps: ['Clarify output', 'Collect key evidence', 'Draft concise recommendations'],
         why: 'Best default for speed and momentum.',
+        launchInstruction: 'Start with a focused fast path, collect key evidence, and draft concise recommendations.',
         recommended: true,
       },
       {
@@ -442,6 +444,7 @@ const {
         summary: 'Validate high-impact claims before proposing actions.',
         steps: ['List core claims', 'Verify against sources', 'Call out confidence levels'],
         why: 'Best when risk tolerance is low.',
+        launchInstruction: 'Start with an evidence-first validation pass and verify high-impact claims before proposing actions.',
         recommended: false,
       },
       {
@@ -450,11 +453,65 @@ const {
         summary: 'Use richer meeting context to tailor a nuanced plan.',
         steps: ['Extract constraints', 'Resolve unknowns', 'Create phased execution checklist'],
         why: 'Best when details are ambiguous.',
+        launchInstruction: 'Start with a context deep-dive and use the meeting constraints to shape a phased execution checklist.',
         recommended: false,
       },
     ],
     recommendedOptionId: 'option-1',
     guidanceUsed,
+  });
+
+  const makePlanSuggestions = (todoId: string): TaskSuggestionDeck => {
+    const draft = makePlanDraft(todoId, 'Generate the best task plan.');
+    return {
+      todoId,
+      phase: 'planning',
+      generatedAt: draft.generatedAt,
+      source: 'ai',
+      actions: draft.options.map((option) => ({
+        id: option.id,
+        phase: 'planning',
+        label: option.title,
+        summary: option.summary,
+        instruction: option.launchInstruction,
+        recommended: option.recommended,
+        actionMode: 'start',
+        editable: true,
+        steps: option.steps,
+        reason: option.why,
+      })),
+    };
+  };
+
+  const makeNextMoveSuggestions = (todoId: string): TaskSuggestionDeck => ({
+    todoId,
+    phase: 'next_move',
+    generatedAt: new Date().toISOString(),
+    source: 'ai',
+    actions: [
+      {
+        id: 'next-refine',
+        phase: 'next_move',
+        label: 'Refine recommendations',
+        summary: 'Tighten the strongest ideas into a cleaner recommendation set.',
+        instruction: 'Refine the strongest ideas into a cleaner recommendation set with sharper tradeoffs.',
+        recommended: true,
+        actionMode: 'message',
+        editable: true,
+        reason: 'Best next move when the task already has a useful draft.',
+      },
+      {
+        id: 'next-draft',
+        phase: 'next_move',
+        label: 'Draft follow-up',
+        summary: 'Turn the findings into a concise follow-up message.',
+        instruction: 'Turn the findings into a concise follow-up message that is ready for review.',
+        recommended: false,
+        actionMode: 'message',
+        editable: true,
+        reason: 'Best when the next step is communication.',
+      },
+    ],
   });
 
   const makePlanningContext = (todoId: string): TaskPlanningContext => ({
@@ -493,6 +550,8 @@ const {
       ['todo-2', makePlanningContext('todo-2')],
     ]),
     latestPlans: new Map<string, TaskPlanDraft>(),
+    planSuggestionDecks: new Map<string, TaskSuggestionDeck>(),
+    nextMoveSuggestionDecks: new Map<string, TaskSuggestionDeck>(),
     homeDetails: new Map<string, HomeNoteDetail>([
       ['meeting-1', makeHomeNoteDetail('meeting-1')],
       ['meeting-2', makeHomeNoteDetail('meeting-2')],
@@ -728,10 +787,70 @@ const {
     tasksSyncNow: vi.fn(async () => ({ ok: true, meetingCount: 0, fetchedAt: new Date().toISOString() })),
     tasksStart: vi.fn(async () => ({ ok: true })),
     tasksGetPlanningContext: vi.fn(async (todoId: string) => state.planningContexts.get(todoId) ?? makePlanningContext(todoId)),
+    tasksGetPlanSuggestions: vi.fn(async (todoId: string) => {
+      if (!state.planSuggestionDecks.has(todoId)) {
+        state.planSuggestionDecks.set(todoId, makePlanSuggestions(todoId));
+      }
+      return JSON.parse(JSON.stringify(state.planSuggestionDecks.get(todoId)));
+    }),
+    tasksGetNextMoveSuggestions: vi.fn(async (todoId: string) => {
+      if (!state.nextMoveSuggestionDecks.has(todoId)) {
+        state.nextMoveSuggestionDecks.set(todoId, makeNextMoveSuggestions(todoId));
+      }
+      return JSON.parse(JSON.stringify(state.nextMoveSuggestionDecks.get(todoId)));
+    }),
+    tasksExecuteSuggestion: vi.fn(async (todoId: string, input: { phase: 'planning' | 'next_move'; actionId: string; editedInstruction?: string | null }) => {
+      if (input.phase === 'planning') {
+        const next = [...(state.threads.get(todoId) ?? [])];
+        next.push({
+          messageId: `exec-plan-${next.length + 1}`,
+          todoId,
+          runId: 'run-started',
+          role: 'user',
+          content: input.editedInstruction?.trim() || `Approved plan ${input.actionId}`,
+          createdAt: new Date().toISOString(),
+          streaming: false,
+          statusTag: null,
+        });
+        state.threads.set(todoId, next);
+        return { ok: true, queued: false, runId: 'run-started' };
+      }
+      const next = [...(state.threads.get(todoId) ?? [])];
+      next.push({
+        messageId: `exec-next-${next.length + 1}`,
+        todoId,
+        runId: null,
+        role: 'user',
+        content: input.editedInstruction?.trim() || `Executed ${input.actionId}`,
+        createdAt: new Date().toISOString(),
+        streaming: false,
+        statusTag: null,
+      });
+      state.threads.set(todoId, next);
+      return { ok: true, queued: false };
+    }),
     tasksPlanMessage: vi.fn(async (todoId: string, instruction: string) => {
       const guidance = instruction.trim() || 'Generate a concise task plan.';
       const plan = makePlanDraft(todoId, guidance);
       state.latestPlans.set(todoId, plan);
+      state.planSuggestionDecks.set(todoId, {
+        todoId,
+        phase: 'planning',
+        generatedAt: plan.generatedAt,
+        source: 'ai',
+        actions: plan.options.map((option) => ({
+          id: option.id,
+          phase: 'planning',
+          label: option.title,
+          summary: option.summary,
+          instruction: option.launchInstruction,
+          recommended: option.recommended,
+          actionMode: 'start',
+          editable: true,
+          steps: option.steps,
+          reason: option.why,
+        })),
+      });
       const next = [...(state.threads.get(todoId) ?? [])];
       next.push({
         messageId: `plan-user-${next.length + 1}`,
@@ -1079,6 +1198,9 @@ describe('App task copilot', () => {
   it('refreshes the home feed after a tasks-feed-updated event', async () => {
     render(<App />);
     await screen.findByText('LA influencer strategy for song promotion');
+    await waitFor(() => {
+      expect(state.subscriber).not.toBeNull();
+    });
 
     state.homeFeed = {
       ...makeHomeFeed(),
@@ -1096,8 +1218,10 @@ describe('App task copilot', () => {
 
     state.subscriber?.({ type: 'tasks-feed-updated' });
 
+    await waitFor(() => {
+      expect(granolaClientMock.homeGetFeed).toHaveBeenCalledTimes(2);
+    }, { timeout: 2000 });
     expect(await screen.findByText('Freshly synced note')).toBeInTheDocument();
-    expect(granolaClientMock.homeGetFeed).toHaveBeenCalledTimes(2);
   });
 
   it('renders the Granola chat landing with real recipes and recents', async () => {
@@ -1379,7 +1503,8 @@ describe('App task copilot', () => {
     await openTasksWorkspace(user, { taskTitle: 'Research top CRM vendors' });
 
     expect(screen.getByRole('tab', { name: 'Plan', selected: true })).toBeInTheDocument();
-    expect(screen.getByText('Planner')).toBeInTheDocument();
+    expect(screen.getByText('Start options')).toBeInTheDocument();
+    expect(screen.queryByText('Planner')).not.toBeInTheDocument();
 
     await user.click(clickTaskRow('Build outreach lead list'));
 
@@ -1401,72 +1526,62 @@ describe('App task copilot', () => {
     });
   });
 
-  it('runs activity quick actions through the task chat pipeline', async () => {
+  it('runs dynamic next moves through the suggestion execution API', async () => {
     const user = userEvent.setup();
     render(<App />);
     await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
 
-    await user.click(screen.getByRole('button', { name: /Draft follow-up/i }));
+    const draftArticle = screen.getByText('Draft follow-up').closest('article');
+    expect(draftArticle).toBeTruthy();
+    await user.click(within(draftArticle as HTMLElement).getByRole('button', { name: /Turn the findings into a concise follow-up message/i }));
 
     await waitFor(() => {
-      expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+      expect(granolaClientMock.tasksExecuteSuggestion).toHaveBeenCalledWith(
         'todo-2',
-        expect.stringContaining('follow-up message'),
+        expect.objectContaining({
+          phase: 'next_move',
+          actionId: 'next-draft',
+        }),
       );
     });
-
-    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
-      'todo-2',
-      expect.stringContaining('Do not send it'),
-    );
-    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
-      'todo-2',
-      expect.stringContaining('Return draft text only'),
-    );
   });
 
-  it('keeps send-ready quick actions in draft-only mode', async () => {
+  it('lets you edit a next move before executing it', async () => {
     const user = userEvent.setup();
     render(<App />);
     await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
 
-    await user.click(screen.getByRole('button', { name: /Prepare send-ready version/i }));
+    await user.click(screen.getByRole('button', { name: /Edit Refine recommendations/i }));
+    const editor = screen.getByDisplayValue(
+      'Refine the strongest ideas into a cleaner recommendation set with sharper tradeoffs.',
+    );
+    await user.clear(editor);
+    await user.type(editor, 'Send the outreach now with a warmer tone.');
+    await user.click(screen.getByRole('button', { name: /Run edited/i }));
 
     await waitFor(() => {
-      expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+      expect(granolaClientMock.tasksExecuteSuggestion).toHaveBeenCalledWith(
         'todo-2',
-        expect.stringContaining('Return the final draft in plain text only'),
+        expect.objectContaining({
+          phase: 'next_move',
+          actionId: 'next-refine',
+          editedInstruction: 'Send the outreach now with a warmer tone.',
+        }),
       );
     });
-
-    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
-      'todo-2',
-      expect.stringContaining('Do not send anything'),
-    );
-    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
-      'todo-2',
-      expect.stringContaining('do not use messaging, email, browser, or relay tools'),
-    );
   });
 
-  it('shows planning module for an empty task thread and renders custom option last', async () => {
+  it('shows auto-loaded start options instead of the old planner chrome', async () => {
     const user = userEvent.setup();
     state.threads.set('todo-1', []);
     render(<App />);
     await openTasksWorkspace(user);
 
-    expect(await screen.findByText('Planner')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: /Plan task/i }));
-    await waitFor(() => {
-      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
-    });
-
+    expect(await screen.findByText('Start options')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Plan task/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Research operator/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Fast path execution')).toBeInTheDocument();
     expect(screen.getAllByText(/^Recommended$/i, { selector: 'span' }).length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: /^Custom plan$/i })).toBeInTheDocument();
-    const optionCards = document.querySelectorAll('.tasks-plan-option');
-    expect(optionCards).toHaveLength(4);
-    expect(optionCards[3]?.className).toContain('is-custom');
   });
 
   it('uses planning API (not execution send) from composer while pre-start planning is active', async () => {
@@ -1475,9 +1590,9 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    const composer = await screen.findByPlaceholderText(/Tell the planner how this task should be planned/i);
+    const composer = await screen.findByPlaceholderText(/Ask for different start options/i);
     await user.type(composer, 'Prioritize speed and include links');
-    await user.click(screen.getByRole('button', { name: /^Plan$/i }));
+    await user.click(screen.getByRole('button', { name: /^Refresh ideas$/i }));
 
     await waitFor(() => {
       expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalledWith('todo-1', 'Prioritize speed and include links');
@@ -1485,78 +1600,72 @@ describe('App task copilot', () => {
     expect(granolaClientMock.tasksSendMessage).not.toHaveBeenCalled();
   });
 
-  it('runs planner quick actions through the planning API for pre-start tasks', async () => {
+  it('executes a planning suggestion directly from the start options card', async () => {
     const user = userEvent.setup();
     state.threads.set('todo-1', []);
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click(screen.getByRole('button', { name: /Research operator/i }));
+    const fastPathArticle = screen.getByText('Fast path execution').closest('article');
+    expect(fastPathArticle).toBeTruthy();
+    await user.click(
+      within(fastPathArticle as HTMLElement).getByRole('button', {
+        name: /Run a focused pass to generate quick, actionable output/i,
+      }),
+    );
 
     await waitFor(() => {
-      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalledWith(
+      expect(granolaClientMock.tasksExecuteSuggestion).toHaveBeenCalledWith(
         'todo-1',
-        expect.stringContaining('Plan this as a research operator'),
+        expect.objectContaining({
+          phase: 'planning',
+          actionId: 'option-1',
+        }),
       );
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Activity', selected: true })).toBeInTheDocument();
     });
   });
 
-  it('starts with selected recommended preset plan payload', async () => {
+  it('lets you edit a planning suggestion before executing it', async () => {
     const user = userEvent.setup();
     state.threads.set('todo-1', []);
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click(await screen.findByRole('button', { name: /Plan task/i }));
-    await waitFor(() => {
-      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
-    });
+    await user.click(screen.getByRole('button', { name: /Edit Fast path execution/i }));
+    const editor = screen.getByDisplayValue(
+      'Start with a focused fast path, collect key evidence, and draft concise recommendations.',
+    );
+    await user.clear(editor);
+    await user.type(editor, 'Focus on enterprise CRM players first.');
+    await user.click(screen.getByRole('button', { name: /Run edited/i }));
 
-    await user.click(screen.getByRole('button', { name: /^Start Task$/i }));
     await waitFor(() => {
-      expect(granolaClientMock.tasksStart).toHaveBeenCalledWith(
+      expect(granolaClientMock.tasksExecuteSuggestion).toHaveBeenCalledWith(
         'todo-1',
         expect.objectContaining({
-          approvedPlan: expect.objectContaining({
-            selection: expect.objectContaining({
-              mode: 'preset',
-              optionId: 'option-1',
-            }),
-          }),
+          phase: 'planning',
+          actionId: 'option-1',
+          editedInstruction: 'Focus on enterprise CRM players first.',
         }),
       );
     });
   });
 
-  it('starts with custom planning instruction payload', async () => {
+  it('refreshes start options from the composer for pre-start tasks', async () => {
     const user = userEvent.setup();
     state.threads.set('todo-1', []);
     render(<App />);
     await openTasksWorkspace(user);
 
-    await user.click(await screen.findByRole('button', { name: /Plan task/i }));
-    await waitFor(() => {
-      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalled();
-    });
-
-    await user.click(screen.getByRole('button', { name: /^Custom plan$/i }));
-    const customField = screen.getByPlaceholderText(/Type custom planning instructions/i);
-    await user.clear(customField);
-    await user.type(customField, 'Focus on enterprise CRM players first.');
-    await user.click(screen.getByRole('button', { name: /^Start Task$/i }));
+    const composer = await screen.findByPlaceholderText(/Ask for different start options/i);
+    await user.type(composer, 'Bias toward a concise competitive analysis.');
+    await user.click(screen.getByRole('button', { name: /^Refresh ideas$/i }));
 
     await waitFor(() => {
-      expect(granolaClientMock.tasksStart).toHaveBeenCalledWith(
-        'todo-1',
-        expect.objectContaining({
-          approvedPlan: expect.objectContaining({
-            selection: expect.objectContaining({
-              mode: 'custom',
-              customInstruction: 'Focus on enterprise CRM players first.',
-            }),
-          }),
-        }),
-      );
+      expect(granolaClientMock.tasksPlanMessage).toHaveBeenCalledWith('todo-1', 'Bias toward a concise competitive analysis.');
     });
   });
 
@@ -1580,6 +1689,21 @@ describe('App task copilot', () => {
     const link = await screen.findByRole('link', { name: /CRM docs/i });
     expect(link).toHaveAttribute('href', 'https://example.com/crm');
     expect(screen.getByText(/Compare pricing/i)).toBeInTheDocument();
+  });
+
+  it('enters focus mode to expand the execution view without leaving the drawer', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
+
+    await user.click(screen.getByRole('button', { name: /Enter focus mode/i }));
+
+    expect(await screen.findByRole('button', { name: /Show next moves/i })).toBeInTheDocument();
+    expect(screen.queryByText('These suggestions adapt to the latest task state and run output.')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Show next moves/i }));
+    expect(await screen.findByText('These suggestions adapt to the latest task state and run output.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Exit focus mode/i })).toBeInTheDocument();
   });
 
   it('renders timeline traces with details collapsed by default and final answer styling', async () => {

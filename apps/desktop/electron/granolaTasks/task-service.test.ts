@@ -1711,6 +1711,7 @@ describe('GranolaTaskService', () => {
               summary: 'Ship quick result',
               steps: ['Clarify output', 'Collect evidence', 'Respond'],
               why: 'Fastest path',
+              launchInstruction: 'Start with a fast path, gather enough evidence to answer well, and return a concise result quickly.',
               recommended: true,
             },
             {
@@ -1719,6 +1720,7 @@ describe('GranolaTaskService', () => {
               summary: 'Validate key assumptions',
               steps: ['List assumptions', 'Validate claims', 'Draft findings'],
               why: 'Higher confidence',
+              launchInstruction: 'Start with a deeper validation pass, verify the most important assumptions, and then draft findings.',
               recommended: false,
             },
             {
@@ -1727,6 +1729,7 @@ describe('GranolaTaskService', () => {
               summary: 'Use meeting details first',
               steps: ['Extract constraints', 'Resolve ambiguities', 'Draft plan'],
               why: 'Better context fit',
+              launchInstruction: 'Start by extracting meeting constraints, resolve ambiguities, and use that context to drive the execution plan.',
               recommended: false,
             },
           ],
@@ -1872,6 +1875,7 @@ describe('GranolaTaskService', () => {
               summary: 'Do the recommended thing',
               steps: ['First', 'Second', 'Third'],
               why: 'Best fit',
+              launchInstruction: 'Start with the recommended path and follow the three-step sequence to completion.',
               recommended: true,
             },
             {
@@ -1880,6 +1884,7 @@ describe('GranolaTaskService', () => {
               summary: 'Do the alternate thing',
               steps: ['A', 'B', 'C'],
               why: 'Alternative',
+              launchInstruction: 'Start with the alternate path and work through the alternate sequence carefully.',
               recommended: false,
             },
           ],
@@ -1917,6 +1922,270 @@ describe('GranolaTaskService', () => {
     const startCall = internals.ironclaw.startRun.mock.calls[0]?.[0] as { prompt?: string } | undefined;
     expect(startCall?.prompt ?? '').toContain('Approved plan selection:');
     expect(startCall?.prompt ?? '').toContain('Recommended path');
+
+    await service.dispose();
+  });
+
+  it('auto-generates and caches plan suggestions for pre-start tasks', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Plan suggestions task',
+              description: 'Need model-driven start options.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'high',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-plan-suggestions', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: ReturnType<typeof vi.fn> };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-plan-suggestions',
+        summary: '',
+        finalText: JSON.stringify({
+          options: [
+            {
+              id: 'start-fast',
+              title: 'Fast start',
+              summary: 'Move quickly with a compact research pass.',
+              steps: ['Clarify the output', 'Collect evidence', 'Draft the answer'],
+              why: 'Best for momentum.',
+              launchInstruction: 'Start with a compact research pass, collect the minimum evidence needed, and draft the answer quickly.',
+              recommended: true,
+            },
+            {
+              id: 'start-validate',
+              title: 'Validate first',
+              summary: 'Verify the highest-risk claims before drafting.',
+              steps: ['List the risky claims', 'Verify them', 'Draft findings'],
+              why: 'Best for confidence.',
+              launchInstruction: 'Start by validating the highest-risk claims, then draft the findings with explicit confidence.',
+              recommended: false,
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const deck = await service.tasksGetPlanSuggestions(String(todoId));
+    const cached = await service.tasksGetPlanSuggestions(String(todoId));
+
+    expect(deck.phase).toBe('planning');
+    expect(deck.actions.length).toBeGreaterThanOrEqual(2);
+    expect(deck.actions.length).toBeLessThanOrEqual(3);
+    expect(deck.actions.filter((action) => action.recommended)).toHaveLength(1);
+    expect(deck.actions[0]?.instruction).toContain('compact research pass');
+    expect(cached.actions.map((action) => action.id)).toEqual(deck.actions.map((action) => action.id));
+    expect(internals.ironclaw.startRun).toHaveBeenCalledTimes(1);
+
+    await service.dispose();
+  });
+
+  it('generates AI next moves from live task state', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Next move task',
+              description: 'Need dynamic next actions.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'medium',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-next-moves', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: ReturnType<typeof vi.fn> };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-next-moves',
+        summary: '',
+        finalText: JSON.stringify({
+          actions: [
+            {
+              id: 'continue-research',
+              label: 'Continue research',
+              summary: 'Push the research one step further with higher-signal sources.',
+              instruction: 'Continue the research with higher-signal sources and tighten the recommendation.',
+              reason: 'The task still needs stronger evidence.',
+              recommended: true,
+              actionMode: 'message',
+              editable: true,
+            },
+            {
+              id: 'draft-email',
+              label: 'Draft outreach',
+              summary: 'Turn the current findings into a warm outreach draft.',
+              instruction: 'Turn the findings into a warm outreach draft ready for review.',
+              reason: 'The next natural step is communication.',
+              recommended: false,
+              actionMode: 'message',
+              editable: true,
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const deck = await service.tasksGetNextMoveSuggestions(String(todoId));
+
+    expect(deck.phase).toBe('next_move');
+    expect(deck.actions.length).toBeGreaterThanOrEqual(2);
+    expect(deck.actions.length).toBeLessThanOrEqual(3);
+    expect(deck.actions[0]?.label).toBe('Continue research');
+    expect(deck.actions.filter((action) => action.recommended)).toHaveLength(1);
+
+    await service.dispose();
+  });
+
+  it('executes edited next-move suggestions through the task thread', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () =>
+        JSON.stringify({
+          todos: [
+            {
+              title: 'Execute next move',
+              description: 'Ensure edited next moves are sent as-is.',
+              owner: 'Me',
+              due_date: 'Tomorrow',
+              priority: 'medium',
+            },
+          ],
+        }),
+    });
+
+    await service.init();
+    await service.runTodoExtraction('seed', [meeting('m-exec-next-move', 'notes')]);
+    const todoId = service.getFeed().todos[0]?.todoId;
+    expect(todoId).toBeTruthy();
+
+    const internals = service as unknown as {
+      refreshExecutorState: () => Promise<{
+        state: 'connected';
+        profile: string;
+        gatewayUrl: string;
+        dashboardUrl: string;
+        lastCheckedAt: string;
+        lastError: null;
+      }>;
+      ironclaw: { startRun: ReturnType<typeof vi.fn> };
+    };
+    internals.refreshExecutorState = vi.fn(async () => ({
+      state: 'connected' as const,
+      profile: 'ironclaw',
+      gatewayUrl: 'ws://127.0.0.1:19789',
+      dashboardUrl: 'http://127.0.0.1:19789/#token=test',
+      lastCheckedAt: new Date().toISOString(),
+      lastError: null,
+    }));
+    internals.ironclaw.startRun = vi.fn(() => ({
+      cancel: vi.fn(),
+      done: Promise.resolve({
+        ok: true,
+        runId: 'run-exec-next-move',
+        summary: '',
+        finalText: JSON.stringify({
+          actions: [
+            {
+              id: 'send-outreach',
+              label: 'Send outreach',
+              summary: 'Prepare the outreach message.',
+              instruction: 'Draft the outreach message for review.',
+              reason: 'The task is ready for outreach.',
+              recommended: true,
+              actionMode: 'message',
+              editable: true,
+            },
+            {
+              id: 'research-more',
+              label: 'Research more',
+              summary: 'Collect a little more evidence.',
+              instruction: 'Collect a little more evidence before drafting.',
+              reason: 'Use this if the current draft is weak.',
+              recommended: false,
+              actionMode: 'message',
+              editable: true,
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const result = await service.tasksExecuteSuggestion(String(todoId), {
+      phase: 'next_move',
+      actionId: 'send-outreach',
+      editedInstruction: 'Send the outreach email now with the strongest findings first.',
+    });
+    expect(result.ok).toBe(true);
+
+    const thread = await service.tasksGetThread(String(todoId), null, 80);
+    expect(thread.messages.at(-1)?.content).toBe('Send the outreach email now with the strongest findings first.');
 
     await service.dispose();
   });

@@ -43,8 +43,8 @@ import type {
   HomeRecentNote,
   HomeUpcomingMeeting,
   TaskChatMessage,
-  TaskPlanDraft,
   TaskPlanningContext,
+  TaskSuggestionDeck,
   TaskStartOptions,
   TasksFeed,
   TasksRealtimeEvent,
@@ -191,16 +191,6 @@ function applyRealtimeEventToMessages(messages: TaskChatMessage[], event: TasksR
     trace: null,
   });
   return mergeMessageList([], next);
-}
-
-function latestPlanDraftFromMessages(messages: TaskChatMessage[]): TaskPlanDraft | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.planDraft) {
-      return message.planDraft;
-    }
-  }
-  return null;
 }
 
 function HomePlaceholder({ title, copy }: { title: string; copy: string }) {
@@ -1660,12 +1650,11 @@ export default function GranolaHomeScreen() {
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [planningContext, setPlanningContext] = useState<TaskPlanningContext | null>(null);
   const [planningContextLoading, setPlanningContextLoading] = useState(false);
-  const [planningDraft, setPlanningDraft] = useState<TaskPlanDraft | null>(null);
-  const [planningInput, setPlanningInput] = useState('');
-  const [isPlanning, setIsPlanning] = useState(false);
-  const [selectedPlanMode, setSelectedPlanMode] = useState<'preset' | 'custom' | null>(null);
-  const [selectedPlanOptionId, setSelectedPlanOptionId] = useState<string | null>(null);
-  const [customPlanInstruction, setCustomPlanInstruction] = useState('');
+  const [planSuggestions, setPlanSuggestions] = useState<TaskSuggestionDeck | null>(null);
+  const [planSuggestionsLoading, setPlanSuggestionsLoading] = useState(false);
+  const [nextMoveSuggestions, setNextMoveSuggestions] = useState<TaskSuggestionDeck | null>(null);
+  const [nextMoveSuggestionsLoading, setNextMoveSuggestionsLoading] = useState(false);
+  const [executingSuggestionActionId, setExecutingSuggestionActionId] = useState<string | null>(null);
   const [aiStatus, setAIStatus] = useState<CodexAIStatus | null>(null);
   const [aiError, setAIError] = useState<string | null>(null);
   const [isAIConnecting, setIsAIConnecting] = useState(false);
@@ -1684,7 +1673,6 @@ export default function GranolaHomeScreen() {
   );
   const activeRunTodoId = tasksFeed?.activeRunTodoId ?? null;
   const selectedRunActive = Boolean(selectedTodoId && activeRunTodoId === selectedTodoId);
-  const latestPlanDraft = useMemo(() => latestPlanDraftFromMessages(threadMessages), [threadMessages]);
   const hasNonPlanningThreadMessages = useMemo(
     () => threadMessages.some((message) => (message.messageType ?? 'default') === 'default'),
     [threadMessages],
@@ -1697,41 +1685,35 @@ export default function GranolaHomeScreen() {
       selectedTask.runQueueState === 'idle' &&
       !hasNonPlanningThreadMessages,
   );
-  const plannerSelectionValid = Boolean(
-    !isTaskPreStart ||
-      (selectedPlanMode === 'preset' && selectedPlanOptionId) ||
-      (selectedPlanMode === 'custom' && customPlanInstruction.trim().length > 0),
-  );
   const showWorkingIndicator =
     selectedRunActive || threadMessages.some((message) => message.role === 'assistant' && message.streaming);
+  const recommendedPlanSuggestion = useMemo(
+    () => planSuggestions?.actions.find((action) => action.recommended) ?? planSuggestions?.actions[0] ?? null,
+    [planSuggestions],
+  );
+  const plannerSelectionValid = Boolean(!isTaskPreStart || recommendedPlanSuggestion);
   const selectedStartOptions = useMemo<TaskStartOptions | undefined>(() => {
-    if (!isTaskPreStart) {
+    if (!isTaskPreStart || !recommendedPlanSuggestion) {
       return undefined;
     }
-    if (selectedPlanMode === 'preset' && selectedPlanOptionId) {
-      return {
-        approvedPlan: {
-          draftId: planningDraft?.draftId,
-          selection: {
-            mode: 'preset',
-            optionId: selectedPlanOptionId,
-          },
+    return {
+      approvedPlan: {
+        selection: {
+          mode: 'preset',
+          optionId: recommendedPlanSuggestion.id,
         },
-      };
-    }
-    if (selectedPlanMode === 'custom' && customPlanInstruction.trim()) {
-      return {
-        approvedPlan: {
-          draftId: planningDraft?.draftId,
-          selection: {
-            mode: 'custom',
-            customInstruction: customPlanInstruction.trim(),
-          },
+        optionSnapshot: {
+          id: recommendedPlanSuggestion.id,
+          title: recommendedPlanSuggestion.label,
+          summary: recommendedPlanSuggestion.summary,
+          why: recommendedPlanSuggestion.reason || 'Recommended start option.',
+          steps: recommendedPlanSuggestion.steps ?? [],
+          launchInstruction: recommendedPlanSuggestion.instruction,
+          recommended: recommendedPlanSuggestion.recommended,
         },
-      };
-    }
-    return undefined;
-  }, [customPlanInstruction, isTaskPreStart, planningDraft?.draftId, selectedPlanMode, selectedPlanOptionId]);
+      },
+    };
+  }, [isTaskPreStart, recommendedPlanSuggestion]);
   const activeWarningKey = useMemo(
     () => (tasksFeed?.warning ? createWarningKey(tasksFeed.warning, tasksFeed.warningDetails) : null),
     [tasksFeed?.warning, tasksFeed?.warningDetails],
@@ -1980,19 +1962,53 @@ export default function GranolaHomeScreen() {
     }
   }, []);
 
+  const fetchPlanSuggestions = useCallback(async (todoId: string): Promise<void> => {
+    if (!todoId) {
+      return;
+    }
+    setPlanSuggestionsLoading(true);
+    try {
+      const deck = await granolaClient.tasksGetPlanSuggestions(todoId);
+      setPlanSuggestions(deck);
+      setTasksError(null);
+    } catch (error) {
+      setTasksError(error instanceof Error ? error.message : 'Unable to load start options.');
+      setPlanSuggestions(null);
+    } finally {
+      setPlanSuggestionsLoading(false);
+    }
+  }, []);
+
+  const fetchNextMoveSuggestions = useCallback(async (todoId: string): Promise<void> => {
+    if (!todoId) {
+      return;
+    }
+    setNextMoveSuggestionsLoading(true);
+    try {
+      const deck = await granolaClient.tasksGetNextMoveSuggestions(todoId);
+      setNextMoveSuggestions(deck);
+      setTasksError(null);
+    } catch (error) {
+      setTasksError(error instanceof Error ? error.message : 'Unable to load next moves.');
+      setNextMoveSuggestions(null);
+    } finally {
+      setNextMoveSuggestionsLoading(false);
+    }
+  }, []);
+
   const openTaskChat = useCallback(
     async (todoId: string) => {
       setSelectedTodoId(todoId);
       setLiveStatus(null);
-      setPlanningInput('');
-      setCustomPlanInstruction('');
-      setSelectedPlanMode(null);
-      setSelectedPlanOptionId(null);
+      setPlanSuggestions(null);
+      setNextMoveSuggestions(null);
+      setExecutingSuggestionActionId(null);
       await fetchThread(todoId, null, false);
       await fetchPlanningContext(todoId);
+      await fetchPlanSuggestions(todoId);
       scrollMessagesToBottom(false);
     },
-    [fetchPlanningContext, fetchThread, scrollMessagesToBottom],
+    [fetchPlanSuggestions, fetchPlanningContext, fetchThread, scrollMessagesToBottom],
   );
 
   const scheduleFeedRefresh = useCallback(() => {
@@ -2029,12 +2045,29 @@ export default function GranolaHomeScreen() {
   }, [activeTab, fetchPlanningContext, fetchThread, selectedTodoId]);
 
   useEffect(() => {
-    if (latestPlanDraft) {
-      setPlanningDraft(latestPlanDraft);
+    if (!selectedTodoId || activeTab !== 'tasks') {
       return;
     }
-    setPlanningDraft(null);
-  }, [latestPlanDraft]);
+    if (isTaskPreStart) {
+      void fetchPlanSuggestions(selectedTodoId);
+      setNextMoveSuggestions(null);
+      return;
+    }
+    setPlanSuggestions(null);
+    if (!showWorkingIndicator) {
+      void fetchNextMoveSuggestions(selectedTodoId);
+    }
+  }, [
+    activeTab,
+    fetchNextMoveSuggestions,
+    fetchPlanSuggestions,
+    isTaskPreStart,
+    selectedTodoId,
+    selectedTask?.runQueueState,
+    selectedTask?.runState,
+    showWorkingIndicator,
+    threadMessages.length,
+  ]);
 
   useEffect(() => {
     if (!chatSendStartedAt) {
@@ -2052,25 +2085,6 @@ export default function GranolaHomeScreen() {
       window.clearInterval(interval);
     };
   }, [chatSendStartedAt]);
-
-  useEffect(() => {
-    if (!planningDraft) {
-      return;
-    }
-    if (selectedPlanMode === 'custom') {
-      return;
-    }
-    const hasSelectedOption = Boolean(
-      selectedPlanMode === 'preset' &&
-        selectedPlanOptionId &&
-        planningDraft.options.some((option) => option.id === selectedPlanOptionId),
-    );
-    if (hasSelectedOption) {
-      return;
-    }
-    setSelectedPlanMode('preset');
-    setSelectedPlanOptionId(planningDraft.recommendedOptionId);
-  }, [planningDraft, selectedPlanMode, selectedPlanOptionId]);
 
   useEffect(() => {
     if (activeTab !== 'tasks' && activeTab !== 'ai') {
@@ -2350,41 +2364,13 @@ export default function GranolaHomeScreen() {
     [fetchTasksFeed, fetchThread, startingTodoId],
   );
 
-  const handleGeneratePlan = useCallback(async () => {
-    if (!selectedTodoId || isPlanning) {
-      return;
-    }
-    const instruction = planningInput.trim() || 'Generate 2-3 concise plan options with one recommended option.';
-    setPlanningInput('');
-    setIsPlanning(true);
-    try {
-      const result = await granolaClient.tasksPlanMessage(selectedTodoId, instruction);
-      if (!result.ok && result.message) {
-        setTasksError(result.message);
-      } else {
-        setTasksError(null);
-      }
-      if (result.plan) {
-        setPlanningDraft(result.plan);
-        setSelectedPlanMode('preset');
-        setSelectedPlanOptionId(result.plan.recommendedOptionId);
-      }
-    } catch (error) {
-      setTasksError(error instanceof Error ? error.message : 'Unable to generate a plan.');
-    } finally {
-      setIsPlanning(false);
-      await fetchTasksFeed();
-    }
-  }, [fetchTasksFeed, isPlanning, planningInput, selectedTodoId]);
-
   const handleRunPlannerInstruction = useCallback(
     async (todoId: string, instruction: string) => {
       const trimmed = instruction.trim();
-      if (!trimmed || isPlanning) {
+      if (!trimmed || planSuggestionsLoading) {
         return;
       }
-      setPlanningInput('');
-      setIsPlanning(true);
+      setPlanSuggestionsLoading(true);
       try {
         const result = await granolaClient.tasksPlanMessage(todoId, trimmed);
         if (!result.ok && result.message) {
@@ -2392,19 +2378,15 @@ export default function GranolaHomeScreen() {
         } else {
           setTasksError(null);
         }
-        if (result.plan) {
-          setPlanningDraft(result.plan);
-          setSelectedPlanMode('preset');
-          setSelectedPlanOptionId(result.plan.recommendedOptionId);
-        }
+        await fetchPlanSuggestions(todoId);
       } catch (error) {
         setTasksError(error instanceof Error ? error.message : 'Unable to generate a plan.');
       } finally {
-        setIsPlanning(false);
+        setPlanSuggestionsLoading(false);
         await fetchTasksFeed();
       }
     },
-    [fetchTasksFeed, isPlanning],
+    [fetchPlanSuggestions, fetchTasksFeed, planSuggestionsLoading],
   );
 
   const handleRunTaskThreadInstruction = useCallback(
@@ -2427,9 +2409,10 @@ export default function GranolaHomeScreen() {
       } finally {
         setIsSendingMessage(false);
         await fetchTasksFeed();
+        await fetchThread(todoId, null, false);
       }
     },
-    [fetchTasksFeed, isSendingMessage],
+    [fetchTasksFeed, fetchThread, isSendingMessage],
   );
 
   const handleSendMessage = useCallback(async () => {
@@ -2459,21 +2442,36 @@ export default function GranolaHomeScreen() {
     } finally {
       setIsSendingMessage(false);
       await fetchTasksFeed();
+      await fetchThread(selectedTodoId, null, false);
     }
-  }, [composerText, fetchTasksFeed, handleRunPlannerInstruction, isSendingMessage, isTaskPreStart, selectedTodoId]);
+  }, [composerText, fetchTasksFeed, fetchThread, handleRunPlannerInstruction, isSendingMessage, isTaskPreStart, selectedTodoId]);
 
-  const handleTaskQuickAction = useCallback(
-    async (input: { kind: 'planner' | 'message'; text: string }) => {
-      if (!selectedTodoId) {
+  const handleExecuteSuggestion = useCallback(
+    async (input: { phase: 'planning' | 'next_move'; actionId: string; editedInstruction?: string | null }) => {
+      if (!selectedTodoId || executingSuggestionActionId) {
         return;
       }
-      if (input.kind === 'planner') {
-        await handleRunPlannerInstruction(selectedTodoId, input.text);
-        return;
+      setExecutingSuggestionActionId(input.actionId);
+      if (input.phase === 'next_move') {
+        setIsSendingMessage(true);
       }
-      await handleRunTaskThreadInstruction(selectedTodoId, input.text);
+      try {
+        const result = await granolaClient.tasksExecuteSuggestion(selectedTodoId, input);
+        if (!result.ok && result.message) {
+          setTasksError(result.message);
+        } else {
+          setTasksError(null);
+        }
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to run suggestion.');
+      } finally {
+        setExecutingSuggestionActionId(null);
+        setIsSendingMessage(false);
+        await fetchTasksFeed();
+        await fetchThread(selectedTodoId, null, false);
+      }
     },
-    [handleRunPlannerInstruction, handleRunTaskThreadInstruction, selectedTodoId],
+    [executingSuggestionActionId, fetchTasksFeed, fetchThread, selectedTodoId],
   );
 
   const handleCancelRun = useCallback(async () => {
@@ -2771,25 +2769,11 @@ export default function GranolaHomeScreen() {
       selectedTask={selectedTask}
       planningContext={planningContext}
       planningContextLoading={planningContextLoading}
-      planningDraft={planningDraft}
-      planningInput={planningInput}
-      onPlanningInputChange={setPlanningInput}
-      isPlanning={isPlanning}
-      selectedPlanMode={selectedPlanMode}
-      selectedPlanOptionId={selectedPlanOptionId}
-      customPlanInstruction={customPlanInstruction}
-      onCustomPlanInstructionChange={setCustomPlanInstruction}
-      onSelectPlanOption={(mode, optionId) => {
-        setSelectedPlanMode(mode);
-        if (mode === 'preset') {
-          setSelectedPlanOptionId(optionId ?? null);
-          return;
-        }
-        setSelectedPlanOptionId(null);
-      }}
-      onGeneratePlan={() => {
-        void handleGeneratePlan();
-      }}
+      planSuggestions={planSuggestions}
+      planSuggestionsLoading={planSuggestionsLoading}
+      nextMoveSuggestions={nextMoveSuggestions}
+      nextMoveSuggestionsLoading={nextMoveSuggestionsLoading}
+      executingSuggestionActionId={executingSuggestionActionId}
       selectedStartOptions={selectedStartOptions}
       plannerSelectionValid={plannerSelectionValid}
       threadMessages={threadMessages}
@@ -2848,8 +2832,8 @@ export default function GranolaHomeScreen() {
         void handleSummarizeTask();
       }}
       isSummarizingTask={isSummarizingTask}
-      onRunQuickAction={(input) => {
-        void handleTaskQuickAction(input);
+      onRunSuggestion={(input) => {
+        void handleExecuteSuggestion(input);
       }}
     />
   );

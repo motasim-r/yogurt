@@ -188,6 +188,30 @@ function registerIpcHandlers(): void {
     }
     return withTaskService().tasksGetPlanningContext(todoId);
   });
+  ipcMain.handle(IPC_CHANNELS.tasksGetPlanSuggestions, (_event, todoId: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    return withTaskService().tasksGetPlanSuggestions(todoId);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksGetNextMoveSuggestions, (_event, todoId: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    return withTaskService().tasksGetNextMoveSuggestions(todoId);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksExecuteSuggestion, (_event, todoId: unknown, input: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('suggestion input must be an object');
+    }
+    return withTaskService().tasksExecuteSuggestion(
+      todoId,
+      input as { phase: 'planning' | 'next_move'; actionId: string; editedInstruction?: string | null },
+    );
+  });
   ipcMain.handle(IPC_CHANNELS.tasksPlanMessage, (_event, todoId: unknown, instruction: unknown) => {
     if (typeof todoId !== 'string') {
       throw new Error('todoId must be a string');

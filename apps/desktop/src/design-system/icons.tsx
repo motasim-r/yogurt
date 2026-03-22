@@ -346,6 +346,27 @@ export function ComposeIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function ExpandIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M5.25 2.75h-2.5v2.5M10.75 2.75h2.5v2.5M5.25 13.25h-2.5v-2.5M10.75 13.25h2.5v-2.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6.5 6.5 2.75 2.75M9.5 6.5l3.75-3.75M6.5 9.5l-3.75 3.75M9.5 9.5l3.75 3.75"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function CopyIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>

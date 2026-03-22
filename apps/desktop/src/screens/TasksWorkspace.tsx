@@ -4,10 +4,12 @@ import {
   ChatIcon,
   ChevronLeftIcon,
   ChevronDownIcon,
+  ExpandIcon,
   FileIcon,
   FolderIcon,
   GridIcon,
   PeopleIcon,
+  PencilIcon,
   SearchIcon,
   SlidersIcon,
 } from '../design-system/icons';
@@ -15,8 +17,9 @@ import { MarkdownMessage } from '../components/MarkdownMessage';
 import type {
   CodexAIStatus,
   TaskChatMessage,
-  TaskPlanDraft,
   TaskPlanningContext,
+  TaskSuggestionDeck,
+  TaskSuggestionPhase,
   TaskStartOptions,
   TaskWorkspaceGroupBy,
   TaskWorkspaceItem,
@@ -28,16 +31,6 @@ import type {
 
 type TaskFilterMode = 'all' | 'due_soon' | 'unassigned' | 'following';
 type TaskDetailTab = 'plan' | 'activity' | 'overview' | 'brief';
-type TaskQuickActionKind = 'planner' | 'message';
-
-type TaskQuickAction = {
-  id: string;
-  kind: TaskQuickActionKind;
-  label: string;
-  description: string;
-  prompt: string;
-  recommended?: boolean;
-};
 
 type TasksWorkspaceScreenProps = {
   sidebar: ReactNode;
@@ -49,16 +42,11 @@ type TasksWorkspaceScreenProps = {
   selectedTask: TaskWorkspaceItem | null;
   planningContext: TaskPlanningContext | null;
   planningContextLoading: boolean;
-  planningDraft: TaskPlanDraft | null;
-  planningInput: string;
-  onPlanningInputChange: (value: string) => void;
-  isPlanning: boolean;
-  selectedPlanMode: 'preset' | 'custom' | null;
-  selectedPlanOptionId: string | null;
-  customPlanInstruction: string;
-  onCustomPlanInstructionChange: (value: string) => void;
-  onSelectPlanOption: (mode: 'preset' | 'custom', optionId?: string | null) => void;
-  onGeneratePlan: () => void;
+  planSuggestions: TaskSuggestionDeck | null;
+  planSuggestionsLoading: boolean;
+  nextMoveSuggestions: TaskSuggestionDeck | null;
+  nextMoveSuggestionsLoading: boolean;
+  executingSuggestionActionId: string | null;
   selectedStartOptions?: TaskStartOptions;
   plannerSelectionValid: boolean;
   threadMessages: TaskChatMessage[];
@@ -101,7 +89,7 @@ type TasksWorkspaceScreenProps = {
   onOpenAISettings: () => void;
   onSummarizeTask: () => void;
   isSummarizingTask: boolean;
-  onRunQuickAction: (input: { kind: TaskQuickActionKind; text: string }) => void;
+  onRunSuggestion: (input: { phase: TaskSuggestionPhase; actionId: string; editedInstruction?: string | null }) => void;
 };
 
 function cx(...values: Array<string | false | null | undefined>): string {
@@ -182,16 +170,6 @@ function priorityLabel(priority: TaskWorkspaceItem['priority']): string {
 
 function statusLabel(status: TaskWorkspaceItem['status']): string {
   return status.replace(/_/g, ' ');
-}
-
-function latestPlanDraftFromMessages(messages: TaskChatMessage[]): TaskPlanDraft | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.messageType === 'planning_draft' && message.planDraft) {
-      return message.planDraft;
-    }
-  }
-  return null;
 }
 
 function selectSectionItems(items: TaskWorkspaceItem[], sectionId: TasksWorkspace['sections'][number]['id']): TaskWorkspaceItem[] {
@@ -337,227 +315,142 @@ function defaultDetailTabForTask(task: TaskWorkspaceItem | null, hasThread: bool
   return 'plan';
 }
 
-function formatSentenceList(items: string[]): string {
-  if (items.length === 0) {
-    return '';
-  }
-  if (items.length === 1) {
-    return items[0] as string;
-  }
-  if (items.length === 2) {
-    return `${items[0]} and ${items[1]}`;
-  }
-  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
-}
-
-function taskContextText(task: TaskWorkspaceItem): string {
-  return [task.title, task.description, task.publicSummary, task.meetingTitle].filter(Boolean).join(' ');
-}
-
-function mentionedDemoProducts(task: TaskWorkspaceItem): string[] {
-  const haystack = taskContextText(task).toLowerCase();
-  return ['Granola', 'Lark', 'Sentra', 'Micro'].filter((name) => haystack.includes(name.toLowerCase()));
-}
-
-function meetingAudienceLabel(task: TaskWorkspaceItem): string {
-  const haystack = taskContextText(task).toLowerCase();
-  if (haystack.includes('granola')) {
-    return 'the Granola product engineer';
-  }
-  if (haystack.includes('customer') || haystack.includes('prospect')) {
-    return 'the customer or prospect';
-  }
-  return 'the person I am meeting';
-}
-
-function taskFocusSentence(task: TaskWorkspaceItem): string {
-  const products = mentionedDemoProducts(task);
-  if (products.length > 0) {
-    return `Focus especially on ${formatSentenceList(products)}.`;
-  }
-  return 'Focus on the products and organizations already mentioned in the task context.';
-}
-
-function buildPlannerQuickActions(task: TaskWorkspaceItem): TaskQuickAction[] {
-  const focus = taskFocusSentence(task);
-  return [
-    {
-      id: 'research-operator',
-      kind: 'planner',
-      label: 'Research operator',
-      description: 'Generate a web-first plan with a concise final artifact.',
-      prompt:
-        `Plan this as a research operator. Use public web sources, synthesize the strongest product patterns and tradeoffs, and end with a concise follow-up draft. ${focus} Keep the output sharp enough for a live product conversation.`,
-      recommended: true,
-    },
-    {
-      id: 'product-angle',
-      kind: 'planner',
-      label: 'Product angle',
-      description: 'Bias the work toward what to borrow, avoid, and say live.',
-      prompt:
-        `Bias this plan toward product recommendations: what to borrow, what to avoid, and the clearest narrative to say live. ${focus}`,
-    },
-    {
-      id: 'demo-ready-output',
-      kind: 'planner',
-      label: 'Demo-ready output',
-      description: 'Ask for a crisp memo plus a ready follow-up note.',
-      prompt:
-        'Structure the final output as 3 things to borrow, 2 things to avoid, 1 narrative to say live, and a short follow-up note ready for human approval.',
-    },
-  ];
-}
-
-function buildExecutionQuickActions(task: TaskWorkspaceItem): TaskQuickAction[] {
-  const audience = meetingAudienceLabel(task);
-  const focus = taskFocusSentence(task);
-  return [
-    {
-      id: 'refine-recommendations',
-      kind: 'message',
-      label: 'Refine recommendations',
-      description: 'Tighten the ideas, tradeoffs, and live narrative.',
-      prompt:
-        `Refine the findings into 3 specific product ideas to borrow, 2 anti-patterns to avoid, and 1 crisp narrative for ${audience}. ${focus} Keep it concise and concrete.`,
-      recommended: true,
-    },
-    {
-      id: 'draft-follow-up',
-      kind: 'message',
-      label: 'Draft follow-up',
-      description: 'Turn the findings into a concise message.',
-      prompt:
-        `Turn the findings into a concise follow-up message for ${audience}. Keep it warm, product-smart, and specific. ${focus} Return draft text only. Do not send it, do not open any compose flow, and do not use any external messaging, email, browser, or relay tools.`,
-    },
-    {
-      id: 'prepare-send-ready',
-      kind: 'message',
-      label: 'Prepare send-ready version',
-      description: 'Make the message ready for human approval.',
-      prompt:
-        `Prepare a send-ready version of the follow-up for ${audience}. Keep it short, natural, and ready for human approval. Return the final draft in plain text only. Do not send anything, do not open any compose window, and do not use messaging, email, browser, or relay tools. If sending would normally be next, say that explicitly as a recommendation only.`,
-    },
-  ];
-}
-
-function TaskPlanningSurface({
-  context,
-  contextLoading,
-  draft,
-  isPlanning,
-  planningInput,
-  onPlanningInputChange,
-  onGenerate,
-  selectedMode,
-  selectedOptionId,
-  onSelectOption,
-  customInstruction,
-  onCustomInstructionChange,
+function TaskSuggestionsPanel({
+  title,
+  description,
+  deck,
+  loading,
+  pendingActionId,
+  onRun,
 }: {
-  context: TaskPlanningContext | null;
-  contextLoading: boolean;
-  draft: TaskPlanDraft | null;
-  isPlanning: boolean;
-  planningInput: string;
-  onPlanningInputChange: (value: string) => void;
-  onGenerate: () => void;
-  selectedMode: 'preset' | 'custom' | null;
-  selectedOptionId: string | null;
-  onSelectOption: (mode: 'preset' | 'custom', optionId?: string | null) => void;
-  customInstruction: string;
-  onCustomInstructionChange: (value: string) => void;
+  title: string;
+  description: string;
+  deck: TaskSuggestionDeck | null;
+  loading: boolean;
+  pendingActionId: string | null;
+  onRun: (input: { phase: TaskSuggestionPhase; actionId: string; editedInstruction?: string | null }) => void;
 }) {
+  const [editingActionId, setEditingActionId] = useState<string | null>(null);
+  const [editedInstruction, setEditedInstruction] = useState('');
+
+  useEffect(() => {
+    if (!deck?.actions.some((action) => action.id === editingActionId)) {
+      setEditingActionId(null);
+      setEditedInstruction('');
+    }
+  }, [deck, editingActionId]);
+
   return (
-    <section className="tasks-detail-card">
+    <section className="tasks-detail-card tasks-detail-card--quick-actions">
       <header className="tasks-detail-card__header">
         <div>
-          <h3>Planner</h3>
-          <p>Shape the execution approach before you start the task.</p>
+          <h3>{title}</h3>
+          <p>{description}</p>
         </div>
-        <button type="button" className="tasks-soft-button" onClick={onGenerate} disabled={isPlanning}>
-          {isPlanning ? 'Planning...' : draft ? 'Replan' : 'Plan task'}
-        </button>
+        {loading ? (
+          <span className="tasks-inline-loader" aria-live="polite">
+            <span className="tasks-inline-loader__spinner" aria-hidden="true" />
+            <span>Thinking</span>
+          </span>
+        ) : null}
       </header>
 
-      <div className="tasks-planning-context-grid">
-        {contextLoading ? <p className="tasks-empty-copy">Loading context...</p> : null}
-        {!contextLoading && !context ? <p className="tasks-empty-copy">Planning context unavailable.</p> : null}
-        {context?.sections.map((section) => (
-          <article key={section.id} className="tasks-planning-card">
-            <h4>{section.title}</h4>
-            <ul>
-              {section.bullets.map((bullet, index) => (
-                <li key={`${section.id}-${index}`}>{bullet}</li>
-              ))}
-            </ul>
-          </article>
-        ))}
-      </div>
+      {loading ? (
+        <div className="tasks-suggestion-skeletons" aria-hidden="true">
+          <span className="tasks-suggestion-skeleton" />
+          <span className="tasks-suggestion-skeleton" />
+          <span className="tasks-suggestion-skeleton" />
+        </div>
+      ) : null}
 
-      <label className="tasks-field">
-        <span>Planner guidance</span>
-        <textarea
-          value={planningInput}
-          onChange={(event) => {
-            onPlanningInputChange(event.target.value);
-          }}
-          placeholder="Anything special about how this should be planned?"
-          disabled={isPlanning}
-        />
-      </label>
+      {!loading && (!deck || deck.actions.length === 0) ? (
+        <p className="tasks-empty-copy">Suggestions will appear as soon as the task has enough context.</p>
+      ) : null}
 
-      {draft ? (
-        <div className="tasks-plan-options-grid">
-          {draft.options.map((option, index) => {
-            const selected = selectedMode === 'preset' && selectedOptionId === option.id;
+      {!loading && deck ? (
+        <div className="tasks-suggestions">
+          {deck.actions.map((action) => {
+            const isEditing = editingActionId === action.id;
+            const isPending = pendingActionId === action.id;
             return (
-              <button
-                key={option.id}
-                type="button"
-                className={cx('tasks-plan-option', selected && 'is-selected')}
-                onClick={() => {
-                  onSelectOption('preset', option.id);
-                }}
-              >
-                <div className="tasks-plan-option__top">
-                  <strong>
-                    {index + 1}. {option.title}
-                  </strong>
-                  {option.recommended ? <span className="tasks-plan-option__badge">Recommended</span> : null}
+              <article key={action.id} className={cx('tasks-suggestion', action.recommended && 'is-recommended', isPending && 'is-pending')}>
+                <div className="tasks-suggestion__header">
+                  <div className="tasks-suggestion__title-group">
+                    <strong>{action.label}</strong>
+                    {action.recommended ? <span className="tasks-suggestion__badge">Recommended</span> : null}
+                  </div>
+                  {action.editable ? (
+                    <button
+                      type="button"
+                      className="tasks-suggestion__edit"
+                      aria-label={`Edit ${action.label}`}
+                      onClick={() => {
+                        setEditingActionId(action.id);
+                        setEditedInstruction(action.instruction);
+                      }}
+                      disabled={Boolean(pendingActionId)}
+                    >
+                      <PencilIcon className="glyph-14" />
+                    </button>
+                  ) : null}
                 </div>
-                <p>{option.summary}</p>
-                <small>{option.why}</small>
-                <ul>
-                  {option.steps.map((step, stepIndex) => (
-                    <li key={`${option.id}-${stepIndex}`}>{step}</li>
-                  ))}
-                </ul>
-              </button>
+
+                {!isEditing ? (
+                  <button
+                    type="button"
+                    className="tasks-suggestion__run"
+                    disabled={Boolean(pendingActionId)}
+                    onClick={() => {
+                      onRun({
+                        phase: action.phase,
+                        actionId: action.id,
+                      });
+                    }}
+                  >
+                    <span>{action.summary}</span>
+                    {action.reason ? <small>{action.reason}</small> : null}
+                  </button>
+                ) : (
+                  <div className="tasks-suggestion__editor">
+                    <textarea
+                      value={editedInstruction}
+                      onChange={(event) => {
+                        setEditedInstruction(event.target.value);
+                      }}
+                    />
+                    <div className="tasks-suggestion__editor-actions">
+                      <button
+                        type="button"
+                        className="tasks-soft-button"
+                        onClick={() => {
+                          setEditingActionId(null);
+                          setEditedInstruction('');
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="tasks-primary-button"
+                        disabled={editedInstruction.trim().length === 0 || Boolean(pendingActionId)}
+                        onClick={() => {
+                          onRun({
+                            phase: action.phase,
+                            actionId: action.id,
+                            editedInstruction,
+                          });
+                          setEditingActionId(null);
+                          setEditedInstruction('');
+                        }}
+                      >
+                        Run edited
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </article>
             );
           })}
-
-          <div className={cx('tasks-plan-option', 'is-custom', selectedMode === 'custom' && 'is-selected')}>
-            <button
-              type="button"
-              className="tasks-plan-option__custom-trigger"
-              onClick={() => {
-                onSelectOption('custom');
-              }}
-            >
-              Custom plan
-            </button>
-            <textarea
-              value={customInstruction}
-              onFocus={() => {
-                onSelectOption('custom');
-              }}
-              onChange={(event) => {
-                onCustomInstructionChange(event.target.value);
-              }}
-              placeholder="Type custom planning instructions..."
-            />
-          </div>
         </div>
       ) : null}
     </section>
@@ -639,51 +532,6 @@ function TaskMessageTimeline({
   );
 }
 
-function TaskQuickActionsPanel({
-  title,
-  description,
-  actions,
-  disabled,
-  onRun,
-}: {
-  title: string;
-  description: string;
-  actions: TaskQuickAction[];
-  disabled: boolean;
-  onRun: (input: { kind: TaskQuickActionKind; text: string }) => void;
-}) {
-  return (
-    <section className="tasks-detail-card tasks-detail-card--quick-actions">
-      <header className="tasks-detail-card__header">
-        <div>
-          <h3>{title}</h3>
-          <p>{description}</p>
-        </div>
-      </header>
-
-      <div className="tasks-quick-actions">
-        {actions.map((action) => (
-          <button
-            key={action.id}
-            type="button"
-            className={cx('tasks-quick-action', action.recommended && 'is-recommended')}
-            disabled={disabled}
-            onClick={() => {
-              onRun({ kind: action.kind, text: action.prompt });
-            }}
-          >
-            <span className="tasks-quick-action__top">
-              <strong>{action.label}</strong>
-              {action.recommended ? <span className="tasks-quick-action__badge">Recommended</span> : null}
-            </span>
-            <small>{action.description}</small>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 export default function TasksWorkspaceScreen({
   sidebar,
   feed,
@@ -694,16 +542,11 @@ export default function TasksWorkspaceScreen({
   selectedTask,
   planningContext,
   planningContextLoading,
-  planningDraft,
-  planningInput,
-  onPlanningInputChange,
-  isPlanning,
-  selectedPlanMode,
-  selectedPlanOptionId,
-  customPlanInstruction,
-  onCustomPlanInstructionChange,
-  onSelectPlanOption,
-  onGeneratePlan,
+  planSuggestions,
+  planSuggestionsLoading,
+  nextMoveSuggestions,
+  nextMoveSuggestionsLoading,
+  executingSuggestionActionId,
   selectedStartOptions,
   plannerSelectionValid,
   threadMessages,
@@ -738,7 +581,7 @@ export default function TasksWorkspaceScreen({
   onOpenAISettings,
   onSummarizeTask,
   isSummarizingTask,
-  onRunQuickAction,
+  onRunSuggestion,
 }: TasksWorkspaceScreenProps) {
   const [selectedSectionId, setSelectedSectionId] = useState<TasksWorkspace['sections'][number]['id']>('all');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
@@ -748,6 +591,8 @@ export default function TasksWorkspaceScreen({
   const [draggingTodoId, setDraggingTodoId] = useState<string | null>(null);
   const [detailTodoId, setDetailTodoId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<TaskDetailTab>('overview');
+  const [focusMode, setFocusMode] = useState(false);
+  const [showFocusSuggestions, setShowFocusSuggestions] = useState(false);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -782,6 +627,11 @@ export default function TasksWorkspaceScreen({
     }
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (focusMode) {
+          setFocusMode(false);
+          setShowFocusSuggestions(false);
+          return;
+        }
         setDetailTodoId(null);
       }
     };
@@ -789,12 +639,7 @@ export default function TasksWorkspaceScreen({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [detailTodoId]);
-
-  const effectiveDraft = useMemo(
-    () => planningDraft ?? latestPlanDraftFromMessages(threadMessages),
-    [planningDraft, threadMessages],
-  );
+  }, [detailTodoId, focusMode]);
 
   const filteredItems = useMemo(() => {
     const base = workspace?.items ?? [];
@@ -832,13 +677,33 @@ export default function TasksWorkspaceScreen({
   const selectedAssigneeValue = detailTask?.assignee?.id ?? '__unassigned__';
   const primaryTab = isTaskPreStart ? 'plan' : 'activity';
   const hasThread = threadMessages.length > 0;
-  const plannerQuickActions = useMemo(() => (detailTask ? buildPlannerQuickActions(detailTask) : []), [detailTask]);
-  const executionQuickActions = useMemo(() => (detailTask ? buildExecutionQuickActions(detailTask) : []), [detailTask]);
+
+  useEffect(() => {
+    if (!detailTask) {
+      setFocusMode(false);
+      setShowFocusSuggestions(false);
+      return;
+    }
+    if (!isTaskPreStart && detailTab === 'plan') {
+      setDetailTab('activity');
+    }
+    if (isTaskPreStart && detailTab === 'activity') {
+      setDetailTab('plan');
+    }
+  }, [detailTab, detailTask, isTaskPreStart]);
+
+  useEffect(() => {
+    if (detailTab !== 'activity' || !focusMode) {
+      setShowFocusSuggestions(false);
+    }
+  }, [detailTab, focusMode]);
 
   const openTaskDetail = (item: TaskWorkspaceItem) => {
     const nextHasThread = selectedTodoId === item.todoId && hasThread;
     setDetailTodoId(item.todoId);
     setDetailTab(defaultDetailTabForTask(item, nextHasThread));
+    setFocusMode(false);
+    setShowFocusSuggestions(false);
     onSelectTodo(item.todoId);
   };
 
@@ -1174,16 +1039,20 @@ export default function TasksWorkspaceScreen({
                   className="tasks-drawer__scrim"
                   aria-label="Dismiss task drawer overlay"
                   onClick={() => {
+                    setFocusMode(false);
+                    setShowFocusSuggestions(false);
                     setDetailTodoId(null);
                   }}
                 />
-                <aside className="tasks-detail tasks-detail--drawer workspace-body" aria-label="Task detail">
+                <aside className={cx('tasks-detail tasks-detail--drawer workspace-body', focusMode && 'is-focus')} aria-label="Task detail">
                 <header className="tasks-detail__header">
                   <div>
                     <button
                       type="button"
                       className="tasks-detail__back tasks-soft-button"
                       onClick={() => {
+                        setFocusMode(false);
+                        setShowFocusSuggestions(false);
                         setDetailTodoId(null);
                       }}
                     >
@@ -1215,7 +1084,7 @@ export default function TasksWorkspaceScreen({
                       onClick={() => {
                         onStartTodo(detailTask.todoId, selectedStartOptions);
                       }}
-                      disabled={Boolean(startingTodoId) || !plannerSelectionValid}
+                      disabled={Boolean(startingTodoId) || !plannerSelectionValid || planSuggestionsLoading}
                     >
                       {startingTodoId === detailTask.todoId ? 'Starting...' : 'Start Task'}
                     </button>
@@ -1238,40 +1107,54 @@ export default function TasksWorkspaceScreen({
                   </div>
                 </header>
 
-                <div className="tasks-detail__tablist" role="tablist" aria-label="Task detail tabs">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={detailTab === primaryTab}
-                    className={cx('tasks-detail__tab', detailTab === primaryTab && 'is-active')}
-                    onClick={() => {
-                      setDetailTab(primaryTab);
-                    }}
-                  >
-                    {isTaskPreStart ? 'Plan' : 'Activity'}
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={detailTab === 'overview'}
-                    className={cx('tasks-detail__tab', detailTab === 'overview' && 'is-active')}
-                    onClick={() => {
-                      setDetailTab('overview');
-                    }}
-                  >
-                    Overview
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={detailTab === 'brief'}
-                    className={cx('tasks-detail__tab', detailTab === 'brief' && 'is-active')}
-                    onClick={() => {
-                      setDetailTab('brief');
-                    }}
-                  >
-                    AI Brief
-                  </button>
+                <div className="tasks-detail__tabbar">
+                  <div className="tasks-detail__tablist" role="tablist" aria-label="Task detail tabs">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={detailTab === primaryTab}
+                      className={cx('tasks-detail__tab', detailTab === primaryTab && 'is-active')}
+                      onClick={() => {
+                        setDetailTab(primaryTab);
+                      }}
+                    >
+                      {isTaskPreStart ? 'Plan' : 'Activity'}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={detailTab === 'overview'}
+                      className={cx('tasks-detail__tab', detailTab === 'overview' && 'is-active')}
+                      onClick={() => {
+                        setDetailTab('overview');
+                      }}
+                    >
+                      Overview
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={detailTab === 'brief'}
+                      className={cx('tasks-detail__tab', detailTab === 'brief' && 'is-active')}
+                      onClick={() => {
+                        setDetailTab('brief');
+                      }}
+                    >
+                      AI Brief
+                    </button>
+                  </div>
+                  {!isTaskPreStart ? (
+                    <button
+                      type="button"
+                      className={cx('tasks-icon-button tasks-detail__focus-toggle', focusMode && 'is-active')}
+                      aria-label={focusMode ? 'Exit focus mode' : 'Enter focus mode'}
+                      onClick={() => {
+                        setFocusMode((current) => !current);
+                      }}
+                    >
+                      <ExpandIcon className="glyph-14" />
+                    </button>
+                  ) : null}
                 </div>
 
                 {activityLabel ? (
@@ -1423,50 +1306,71 @@ export default function TasksWorkspaceScreen({
                           </div>
                         </div>
                         <p className="tasks-detail__overview-copy">{detailTask.publicSummary || detailTask.description || 'No summary yet.'}</p>
+                        <details className="tasks-context-details">
+                          <summary>Planning context</summary>
+                          <div className="tasks-planning-context-grid">
+                            {planningContextLoading ? <p className="tasks-empty-copy">Loading context...</p> : null}
+                            {!planningContextLoading && !planningContext ? <p className="tasks-empty-copy">Planning context unavailable.</p> : null}
+                            {planningContext?.sections.map((section) => (
+                              <article key={section.id} className="tasks-planning-card">
+                                <h4>{section.title}</h4>
+                                <ul>
+                                  {section.bullets.map((bullet, index) => (
+                                    <li key={`${section.id}-${index}`}>{bullet}</li>
+                                  ))}
+                                </ul>
+                              </article>
+                            ))}
+                          </div>
+                        </details>
                       </section>
                     </div>
                   ) : null}
 
                   {detailTab === 'plan' ? (
                     <div className="tasks-detail__stack">
-                      <TaskQuickActionsPanel
-                        title="Planner shortcuts"
-                        description="Generate a stronger research plan without typing the guidance from scratch."
-                        actions={plannerQuickActions}
-                        disabled={isPlanning}
-                        onRun={onRunQuickAction}
-                      />
-                      <TaskPlanningSurface
-                        context={planningContext}
-                        contextLoading={planningContextLoading}
-                        draft={effectiveDraft}
-                        isPlanning={isPlanning}
-                        planningInput={planningInput}
-                        onPlanningInputChange={onPlanningInputChange}
-                        onGenerate={onGeneratePlan}
-                        selectedMode={selectedPlanMode}
-                        selectedOptionId={selectedPlanOptionId}
-                        onSelectOption={onSelectPlanOption}
-                        customInstruction={customPlanInstruction}
-                        onCustomInstructionChange={onCustomPlanInstructionChange}
+                      <TaskSuggestionsPanel
+                        title="Start options"
+                        description="Pick a suggested start path or lightly edit one before launch."
+                        deck={planSuggestions}
+                        loading={planSuggestionsLoading}
+                        pendingActionId={executingSuggestionActionId}
+                        onRun={onRunSuggestion}
                       />
                     </div>
                   ) : null}
 
                   {detailTab === 'activity' ? (
-                    <div className="tasks-detail__stack">
-                      <TaskQuickActionsPanel
-                        title="Next moves"
-                        description="Keep the run human-in-the-loop while steering the final output toward a send-ready result."
-                        actions={executionQuickActions}
-                        disabled={isSendingMessage}
-                        onRun={onRunQuickAction}
-                      />
+                    <div className={cx('tasks-detail__stack', focusMode && 'is-focus')}>
+                      {focusMode ? (
+                        <div className="tasks-focus-tray">
+                          <button
+                            type="button"
+                            className="tasks-soft-button"
+                            onClick={() => {
+                              setShowFocusSuggestions((current) => !current);
+                            }}
+                          >
+                            {showFocusSuggestions ? 'Hide next moves' : `Show next moves${nextMoveSuggestions?.actions.length ? ` (${nextMoveSuggestions.actions.length})` : ''}`}
+                          </button>
+                          <span>{showWorkingIndicator ? 'Execution is live.' : 'Timeline expanded for easier reading.'}</span>
+                        </div>
+                      ) : null}
+                      {(!focusMode || showFocusSuggestions) ? (
+                        <TaskSuggestionsPanel
+                          title="Next moves"
+                          description="These suggestions adapt to the latest task state and run output."
+                          deck={nextMoveSuggestions}
+                          loading={nextMoveSuggestionsLoading}
+                          pendingActionId={executingSuggestionActionId}
+                          onRun={onRunSuggestion}
+                        />
+                      ) : null}
                       <section className="tasks-detail-card tasks-detail-card--timeline">
                         <header className="tasks-detail-card__header">
                           <div>
                             <h3>Execution timeline</h3>
-                            <p>Chat with the task while the board stays visible.</p>
+                            <p>{focusMode ? 'Expanded view for reading, editing, and driving the run forward.' : 'Chat with the task while the board stays visible.'}</p>
                           </div>
                         </header>
 
@@ -1493,7 +1397,7 @@ export default function TasksWorkspaceScreen({
                     onChange={(event) => {
                       onComposerTextChange(event.target.value);
                     }}
-                    placeholder={isTaskPreStart ? 'Tell the planner how this task should be planned...' : 'Message task copilot...'}
+                    placeholder={isTaskPreStart ? 'Ask for different start options...' : 'Message task copilot...'}
                     onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
                       if (event.key === 'Enter' && !event.shiftKey) {
                         event.preventDefault();
@@ -1508,7 +1412,7 @@ export default function TasksWorkspaceScreen({
                     onClick={onSendMessage}
                     disabled={!selectedTodoId || isSendingMessage || composerText.trim().length === 0}
                   >
-                    {isSendingMessage ? (isTaskPreStart ? 'Planning...' : 'Sending...') : isTaskPreStart ? 'Plan' : 'Send'}
+                    {isSendingMessage ? (isTaskPreStart ? 'Refreshing...' : 'Sending...') : isTaskPreStart ? 'Refresh ideas' : 'Send'}
                   </button>
                 </footer>
                 </aside>

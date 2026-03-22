@@ -6613,3 +6613,327 @@ svg {
     width: 100%;
   }
 }
+
+/* Dynamic task guidance + focused execution. Chat remains the inner-sidebar
+   baseline; Docs remains the workspace-body baseline. Suggestions should feel
+   like lightweight execution controls, not a second product living inside the
+   drawer. */
+.tasks-detail__tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tasks-detail__focus-toggle.is-active {
+  background: rgba(128, 150, 78, 0.2);
+  border-color: rgba(176, 193, 131, 0.18);
+  color: #f1f4e8;
+}
+
+.tasks-detail--drawer .tasks-message {
+  max-width: min(920px, 100%);
+}
+
+.tasks-detail.is-focus .tasks-detail__header {
+  gap: 10px;
+  padding-bottom: 0;
+}
+
+.tasks-detail.is-focus .tasks-detail__eyebrow {
+  margin-bottom: 2px;
+}
+
+.tasks-detail.is-focus .tasks-detail__chips {
+  margin-top: 6px;
+}
+
+.tasks-detail.is-focus .tasks-detail__body {
+  padding-right: 0;
+}
+
+.tasks-detail.is-focus .tasks-detail__stack.is-focus {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tasks-detail.is-focus .tasks-detail-card--timeline {
+  flex: 1 1 auto;
+}
+
+.tasks-detail.is-focus .tasks-detail__timeline-scroll {
+  padding-right: 6px;
+}
+
+.tasks-detail.is-focus .tasks-message {
+  max-width: 100%;
+}
+
+.tasks-detail.is-focus .tasks-detail__composer textarea {
+  min-height: 104px;
+}
+
+.tasks-focus-tray {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 0.5px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(218, 215, 208, 0.66);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.tasks-focus-tray span {
+  min-width: 0;
+}
+
+.tasks-context-details {
+  border-radius: 14px;
+  border: 0.5px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.tasks-context-details summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 14px;
+  color: rgba(241, 236, 226, 0.82);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.tasks-context-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.tasks-context-details > div {
+  padding: 0 14px 14px;
+}
+
+.tasks-detail-card--quick-actions {
+  gap: 10px;
+}
+
+.tasks-detail-card--quick-actions .tasks-detail-card__header {
+  align-items: center;
+  gap: 10px;
+}
+
+.tasks-suggestions,
+.tasks-suggestion-skeletons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  gap: 10px;
+}
+
+.tasks-suggestion {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 14px;
+  border: 0.5px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.026);
+  color: rgba(241, 236, 226, 0.86);
+  overflow: hidden;
+}
+
+.tasks-suggestion.is-recommended {
+  border-color: rgba(176, 193, 131, 0.16);
+  background:
+    linear-gradient(180deg, rgba(92, 111, 57, 0.08) 0%, rgba(73, 87, 47, 0.08) 100%),
+    rgba(255, 255, 255, 0.032);
+}
+
+.tasks-suggestion.is-pending {
+  opacity: 0.7;
+}
+
+.tasks-suggestion__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tasks-suggestion__title-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.tasks-suggestion__title-group strong {
+  min-width: 0;
+  color: #f1ece2;
+  font-size: 13px;
+  line-height: 1.32;
+  font-weight: 600;
+}
+
+.tasks-suggestion__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  max-width: 100%;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(124, 146, 71, 0.12);
+  color: #dce5b3;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tasks-suggestion__edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  border: 0.5px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  color: rgba(218, 215, 208, 0.62);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.tasks-suggestion__edit:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.09);
+  color: #f1efe7;
+}
+
+.tasks-suggestion__run {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tasks-suggestion__run:hover:not(:disabled) span {
+  color: #f1efe7;
+}
+
+.tasks-suggestion__run span {
+  color: rgba(229, 225, 217, 0.84);
+  font-size: 13px;
+  line-height: 1.42;
+}
+
+.tasks-suggestion__run small {
+  color: rgba(218, 215, 208, 0.58);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.tasks-suggestion__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tasks-suggestion__editor textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 10px 11px;
+  border-radius: 12px;
+  border: 0.5px solid rgba(255, 255, 255, 0.06);
+  background: rgba(46, 46, 45, 0.98);
+  color: #f2f0e8;
+  font: inherit;
+  line-height: 1.45;
+  box-sizing: border-box;
+}
+
+.tasks-suggestion__editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tasks-inline-loader {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(218, 215, 208, 0.66);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tasks-inline-loader__spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-top-color: #dce5b3;
+  animation: tasks-spinner 900ms linear infinite;
+}
+
+.tasks-suggestion-skeleton {
+  display: block;
+  min-height: 108px;
+  border-radius: 14px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.055) 48%, rgba(255, 255, 255, 0.03) 100%),
+    rgba(255, 255, 255, 0.02);
+  background-size: 180% 100%;
+  animation: tasks-skeleton 1.2s ease-in-out infinite;
+}
+
+@keyframes tasks-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes tasks-skeleton {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@media (max-width: 1280px) {
+  .tasks-detail__tabbar {
+    align-items: flex-start;
+  }
+
+  .tasks-suggestions,
+  .tasks-suggestion-skeletons {
+    grid-template-columns: 1fr;
+  }
+
+  .tasks-focus-tray {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

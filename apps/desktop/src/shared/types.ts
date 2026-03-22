@@ -89,6 +89,7 @@ export interface TaskPlanOption {
   summary: string;
   steps: string[];
   why: string;
+  launchInstruction: string;
   recommended: boolean;
 }
 
@@ -99,6 +100,30 @@ export interface TaskPlanDraft {
   options: TaskPlanOption[];
   recommendedOptionId: string;
   guidanceUsed: string;
+}
+
+export type TaskSuggestionPhase = 'planning' | 'next_move';
+export type TaskSuggestionActionMode = 'start' | 'message';
+
+export interface TaskSuggestion {
+  id: string;
+  phase: TaskSuggestionPhase;
+  label: string;
+  summary: string;
+  instruction: string;
+  recommended: boolean;
+  actionMode: TaskSuggestionActionMode;
+  editable: boolean;
+  steps?: string[];
+  reason?: string;
+}
+
+export interface TaskSuggestionDeck {
+  todoId: string;
+  phase: TaskSuggestionPhase;
+  generatedAt: string;
+  actions: TaskSuggestion[];
+  source: 'ai' | 'fallback';
 }
 
 export interface TaskPlanningContextSection {
@@ -123,6 +148,7 @@ export interface TaskStartOptions {
   approvedPlan?: {
     draftId?: string;
     selection: TaskPlanSelection;
+    optionSnapshot?: TaskPlanOption | null;
   };
 }
 
@@ -657,6 +683,12 @@ export interface GranolaAPI {
   tasksOpenPendingAuthorization(): Promise<{ ok: boolean; message?: string }>;
   tasksSyncNow(): Promise<{ ok: boolean; meetingCount: number; fetchedAt: string; warning?: string }>;
   tasksGetPlanningContext(todoId: string): Promise<TaskPlanningContext>;
+  tasksGetPlanSuggestions(todoId: string): Promise<TaskSuggestionDeck>;
+  tasksGetNextMoveSuggestions(todoId: string): Promise<TaskSuggestionDeck>;
+  tasksExecuteSuggestion(
+    todoId: string,
+    input: { phase: TaskSuggestionPhase; actionId: string; editedInstruction?: string | null },
+  ): Promise<{ ok: boolean; queued?: boolean; runId?: string; message?: string }>;
   tasksPlanMessage(todoId: string, instruction: string): Promise<{ ok: boolean; plan?: TaskPlanDraft; message?: string }>;
   tasksStart(todoId: string, options?: TaskStartOptions): Promise<{ ok: boolean; runId?: string; message?: string }>;
   tasksGetThread(todoId: string, cursor?: string | null, limit?: number): Promise<TaskChatThreadPage>;
