@@ -428,7 +428,7 @@ function buildExecutionQuickActions(task: TaskWorkspaceItem): TaskQuickAction[] 
       label: 'Draft follow-up',
       description: 'Turn the findings into a concise message.',
       prompt:
-        `Turn the findings into a concise follow-up message for ${audience}. Keep it warm, product-smart, and specific. ${focus}`,
+        `Turn the findings into a concise follow-up message for ${audience}. Keep it warm, product-smart, and specific. ${focus} Return draft text only. Do not send it, do not open any compose flow, and do not use any external messaging, email, browser, or relay tools.`,
     },
     {
       id: 'prepare-send-ready',
@@ -436,7 +436,7 @@ function buildExecutionQuickActions(task: TaskWorkspaceItem): TaskQuickAction[] 
       label: 'Prepare send-ready version',
       description: 'Make the message ready for human approval.',
       prompt:
-        `Prepare a send-ready version of the follow-up for ${audience}. Keep it short, natural, and ready for human approval. Do not send anything yet.`,
+        `Prepare a send-ready version of the follow-up for ${audience}. Keep it short, natural, and ready for human approval. Return the final draft in plain text only. Do not send anything, do not open any compose window, and do not use messaging, email, browser, or relay tools. If sending would normally be next, say that explicitly as a recommendation only.`,
     },
   ];
 }

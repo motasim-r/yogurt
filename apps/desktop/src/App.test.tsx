@@ -1414,6 +1414,39 @@ describe('App task copilot', () => {
         expect.stringContaining('follow-up message'),
       );
     });
+
+    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+      'todo-2',
+      expect.stringContaining('Do not send it'),
+    );
+    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+      'todo-2',
+      expect.stringContaining('Return draft text only'),
+    );
+  });
+
+  it('keeps send-ready quick actions in draft-only mode', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
+
+    await user.click(screen.getByRole('button', { name: /Prepare send-ready version/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+        'todo-2',
+        expect.stringContaining('Return the final draft in plain text only'),
+      );
+    });
+
+    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+      'todo-2',
+      expect.stringContaining('Do not send anything'),
+    );
+    expect(granolaClientMock.tasksSendMessage).toHaveBeenCalledWith(
+      'todo-2',
+      expect.stringContaining('do not use messaging, email, browser, or relay tools'),
+    );
   });
 
   it('shows planning module for an empty task thread and renders custom option last', async () => {
