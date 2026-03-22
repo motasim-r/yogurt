@@ -5223,6 +5223,8 @@ svg {
 
 .tasks-board__header,
 .tasks-detail__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
   gap: 12px;
 }
@@ -6089,7 +6091,7 @@ svg {
 }
 
 .tasks-board.has-drawer {
-  --tasks-drawer-width: min(760px, calc(100% - 72px));
+  --tasks-drawer-width: 100%;
 }
 
 .tasks-drawer__scrim {
@@ -6142,6 +6144,13 @@ svg {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+}
+
+.tasks-detail__actions {
+  justify-content: flex-end;
+  align-self: flex-start;
+  flex-wrap: nowrap;
 }
 
 .tasks-detail__header,
@@ -6248,12 +6257,14 @@ svg {
 .tasks-quick-action {
   display: grid;
   gap: 8px;
+  min-width: 0;
   padding: 12px 13px;
   border-radius: 14px;
   border: 0.5px solid rgba(255, 255, 255, 0.05);
   background: rgba(255, 255, 255, 0.026);
   color: rgba(241, 236, 226, 0.86);
   text-align: left;
+  overflow: hidden;
   cursor: pointer;
   transition:
     border-color 140ms ease,
@@ -6275,13 +6286,12 @@ svg {
 }
 
 .tasks-quick-action__top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
   gap: 8px;
 }
 
 .tasks-quick-action__top strong {
+  min-width: 0;
   font-size: 13px;
   line-height: 1.3;
   font-weight: 600;
@@ -6297,6 +6307,8 @@ svg {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  justify-self: start;
+  max-width: 100%;
   min-height: 22px;
   padding: 0 9px;
   border-radius: 999px;
@@ -6305,6 +6317,8 @@ svg {
   font-size: 11px;
   letter-spacing: 0.02em;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tasks-timeline {
@@ -6548,7 +6562,7 @@ svg {
   }
 
   .tasks-detail--drawer {
-    width: min(680px, calc(100% - 48px));
+    width: 100%;
   }
 
   .tasks-table__header,
@@ -6586,7 +6600,16 @@ svg {
     grid-template-columns: 1fr;
   }
 
+  .tasks-detail__header {
+    grid-template-columns: 1fr;
+  }
+
+  .tasks-detail__actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
   .tasks-detail--drawer {
-    width: calc(100% - 24px);
+    width: 100%;
   }
 }
