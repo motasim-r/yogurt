@@ -6,9 +6,11 @@ import type {
   CodexAIActionInput,
   CodexAIActionResult,
   CodexAIStatus,
+  ContextPacket,
   DocsBlock,
   DocsCreateInput,
   DocsDocument,
+  DocVersionSummary,
   DocsHome,
   DocsTemplate,
   DocsUpdatePatch,
@@ -22,7 +24,9 @@ import type {
   Note,
   NoteSummary,
   NoteUpdatePatch,
+  TaskCreateFromContextInput,
   TaskMetadataPatch,
+  TaskWritebackTarget,
   TaskWorkspaceItem,
   TaskWorkspacePrefs,
   TaskWorkspacePrefsPatch,
@@ -585,6 +589,16 @@ const browserFallback: GranolaAPI = {
     document.breadcrumbs = browserDocBreadcrumbs(document.section);
     return deepClone(document);
   },
+  async docsGetHistory(_docId: string): Promise<DocVersionSummary[]> {
+    return [];
+  },
+  async docsRestoreVersion(docId: string, _versionId: string): Promise<DocsDocument> {
+    const document = localState.docsDocuments.find((candidate) => candidate.docId === docId);
+    if (!document) {
+      throw new Error(`document not found: ${docId}`);
+    }
+    return deepClone(document);
+  },
   async tasksGetFeed() {
     return {
       connectionState: 'disconnected',
@@ -674,6 +688,44 @@ const browserFallback: GranolaAPI = {
       },
       items: [],
       selectedTodoIdHint: null,
+    };
+  },
+  async tasksCreateFromContext(_input: TaskCreateFromContextInput) {
+    return {
+      todoId: `browser-task-${Date.now()}`,
+      packetId: `browser-packet-${Date.now()}`,
+    };
+  },
+  async tasksGetContextPacket(todoId: string): Promise<ContextPacket> {
+    return {
+      packetId: `browser-packet-${todoId}`,
+      linkedTodoId: todoId,
+      title: 'Browser fallback context',
+      objective: 'Context packets are only available in Electron runtime.',
+      createdAt: new Date().toISOString(),
+      origin: 'mixed',
+      sources: [],
+      people: [],
+      entities: [],
+      citations: [],
+      preview: {
+        summary: 'Electron runtime required',
+        stats: [],
+        excerpt: 'Context packets are only available in Electron runtime.',
+      },
+      writeback: {
+        chatThreadId: null,
+        docId: null,
+        docTitle: null,
+        docSectionHeading: null,
+      },
+    };
+  },
+  async tasksSetWriteback(_todoId: string, _patch: Partial<TaskWritebackTarget>): Promise<void> {},
+  async tasksWriteBack(_todoId: string, _target: 'chat' | 'doc' | 'followup') {
+    return {
+      ok: false,
+      message: 'Task write-back is only available in Electron runtime.',
     };
   },
   async tasksUpdateMetadata(todoId: string, patch: TaskMetadataPatch): Promise<TaskWorkspaceItem> {

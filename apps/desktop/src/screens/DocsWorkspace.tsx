@@ -7,6 +7,7 @@ import {
   GridIcon,
   HomeIcon,
   MoreIcon,
+  PlanPlusIcon,
   PlusIcon,
   RowsIcon,
   SearchIcon,
@@ -18,6 +19,7 @@ import {
 } from '../design-system/icons';
 import { granolaClient } from '../lib/granolaClient';
 import type {
+  DocVersionSummary,
   DocsBlock,
   DocsCreateInput,
   DocsDocument,
@@ -25,6 +27,7 @@ import type {
   DocsHome,
   DocsHomeFilter,
   DocsSection,
+  TaskCreateFromContextInput,
 } from '../shared/types';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -187,6 +190,7 @@ function EditorBlockRow({
   onToggleChecklist,
   onOpenInsertMenu,
   onSelectInsertType,
+  onRunAsTask,
 }: {
   block: DocsBlock;
   focused: boolean;
@@ -199,6 +203,7 @@ function EditorBlockRow({
   onToggleChecklist: () => void;
   onOpenInsertMenu: () => void;
   onSelectInsertType: (type: DocsBlock['type']) => void;
+  onRunAsTask: () => void;
 }) {
   return (
     <div className={cx('docs-editor-block', `is-${block.type}`, focused && 'is-focused')}>
@@ -210,6 +215,17 @@ function EditorBlockRow({
       >
         <PlusIcon className="glyph-14" />
       </button>
+
+      {block.type !== 'divider' ? (
+        <button
+          type="button"
+          className="docs-editor-block__task"
+          aria-label={`Run ${block.type} as task`}
+          onClick={onRunAsTask}
+        >
+          <PlanPlusIcon className="glyph-14" />
+        </button>
+      ) : null}
 
       <div className="docs-editor-block__body">
         {block.type === 'divider' ? (
@@ -305,11 +321,23 @@ function DocsEditor({
   saveState,
   onBack,
   onDocumentChange,
+  history,
+  historyLoading,
+  showHistory,
+  onToggleHistory,
+  onRestoreVersion,
+  onRunBlockAsTask,
 }: {
   document: DocsDocument;
   saveState: SaveState;
   onBack: () => void;
   onDocumentChange: (next: DocsDocument) => void;
+  history: DocVersionSummary[];
+  historyLoading: boolean;
+  showHistory: boolean;
+  onToggleHistory: () => void;
+  onRestoreVersion: (versionId: string) => void;
+  onRunBlockAsTask: (block: DocsBlock) => void;
 }) {
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
@@ -391,6 +419,10 @@ function DocsEditor({
         </div>
 
         <div className="docs-editor__actions">
+          <button type="button" className="docs-editor__action" onClick={onToggleHistory}>
+            <RowsIcon className="glyph-14" />
+            <span>Version history</span>
+          </button>
           <button
             type="button"
             className={cx('docs-editor__action', document.favorite && 'is-active')}
@@ -493,15 +525,58 @@ function DocsEditor({
                 }
                 insertBlockAfter(block.id, type);
               }}
+              onRunAsTask={() => {
+                onRunBlockAsTask(block);
+              }}
             />
           ))}
         </div>
       </div>
+      {showHistory ? (
+        <aside className="docs-history-panel" aria-label="Version history">
+          <header className="docs-history-panel__header">
+            <div>
+              <p>History</p>
+              <h3>Versions</h3>
+            </div>
+            <button type="button" className="docs-editor__icon" aria-label="Close version history" onClick={onToggleHistory}>
+              <ChevronLeftIcon className="glyph-14" />
+            </button>
+          </header>
+          {historyLoading ? <p className="docs-sidebar__empty workspace-sidebar__empty">Loading versions…</p> : null}
+          {!historyLoading && history.length === 0 ? (
+            <p className="docs-sidebar__empty workspace-sidebar__empty">No saved versions yet.</p>
+          ) : null}
+          <div className="docs-history-panel__list">
+            {history.map((version) => (
+              <article key={version.versionId} className="docs-history-panel__item">
+                <div>
+                  <strong>{version.label}</strong>
+                  <small>{new Date(version.createdAt).toLocaleString()}</small>
+                  <p>{version.preview || 'No preview available.'}</p>
+                  {version.sourceTaskId ? <span className="docs-history-panel__badge">Task write-back</span> : null}
+                </div>
+                <button type="button" className="tasks-soft-button" onClick={() => onRestoreVersion(version.versionId)}>
+                  Restore
+                </button>
+              </article>
+            ))}
+          </div>
+        </aside>
+      ) : null}
     </section>
   );
 }
 
-export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
+export default function DocsWorkspace({
+  sidebar,
+  onCreateTaskFromContext,
+  creatingContextTask,
+}: {
+  sidebar: ReactNode;
+  onCreateTaskFromContext: (input: TaskCreateFromContextInput) => void;
+  creatingContextTask: boolean;
+}) {
   const [home, setHome] = useState<DocsHome | null>(null);
   const [homeLoading, setHomeLoading] = useState(true);
   const [homeError, setHomeError] = useState<string | null>(null);
@@ -514,6 +589,18 @@ export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
   const [documentLoading, setDocumentLoading] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<DocVersionSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [taskContextModal, setTaskContextModal] = useState<{
+    blockId: string;
+    title: string;
+    objective: string;
+    excerpt: string;
+    sectionHeading: string;
+    mode: 'block' | 'checklist';
+    stats: string[];
+  } | null>(null);
   const lastSavedEditableRef = useRef<string>('');
   const saveStatusResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -543,6 +630,16 @@ export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
     };
   }, []);
 
+  const fetchHistory = useCallback(async (docId: string) => {
+    setHistoryLoading(true);
+    try {
+      const next = await granolaClient.docsGetHistory(docId);
+      setHistory(next);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
   const openDocument = useCallback(async (docId: string) => {
     setDocumentLoading(true);
     try {
@@ -550,6 +647,8 @@ export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
       setActiveDocument(next);
       setDocumentError(null);
       setSaveState('idle');
+      setShowHistory(false);
+      setHistory([]);
       lastSavedEditableRef.current = serializeEditableDoc(next);
     } catch (error) {
       setDocumentError(error instanceof Error ? error.message : 'Unable to open document.');
@@ -773,6 +872,56 @@ export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
                   setDocumentError(null);
                 }}
                 onDocumentChange={setActiveDocument}
+                history={history}
+                historyLoading={historyLoading}
+                showHistory={showHistory}
+                onToggleHistory={() => {
+                  if (!activeDocument) {
+                    return;
+                  }
+                  const next = !showHistory;
+                  setShowHistory(next);
+                  if (next) {
+                    void fetchHistory(activeDocument.docId);
+                  }
+                }}
+                onRestoreVersion={(versionId) => {
+                  void granolaClient.docsRestoreVersion(activeDocument.docId, versionId).then((restored) => {
+                    setActiveDocument(restored);
+                    lastSavedEditableRef.current = serializeEditableDoc(restored);
+                    setHome((current) => upsertHomeDocument(current, restored));
+                    void fetchHistory(restored.docId);
+                  });
+                }}
+                onRunBlockAsTask={(block) => {
+                  const index = activeDocument.blocks.findIndex((candidate) => candidate.id === block.id);
+                  let startIndex = index >= 0 ? index : 0;
+                  while (startIndex > 0 && activeDocument.blocks[startIndex - 1]?.type !== 'heading') {
+                    startIndex -= 1;
+                  }
+                  let endIndex = Math.min(activeDocument.blocks.length, startIndex + 12);
+                  for (let pointer = startIndex + 1; pointer < activeDocument.blocks.length; pointer += 1) {
+                    if (activeDocument.blocks[pointer]?.type === 'heading') {
+                      endIndex = pointer;
+                      break;
+                    }
+                  }
+                  const previewBlocks = activeDocument.blocks.slice(startIndex, endIndex);
+                  const sectionHeading =
+                    previewBlocks
+                      .map((candidate) => (candidate.type === 'heading' && 'text' in candidate ? candidate.text.trim() : ''))
+                      .find((candidate) => candidate.length > 0) || activeDocument.title;
+                  const excerpt = previewBlocks.map((candidate) => ('text' in candidate ? candidate.text : '---')).join('\n');
+                  setTaskContextModal({
+                    blockId: block.id,
+                    title: ('text' in block && block.text.trim()) || sectionHeading,
+                    objective: excerpt.replace(/\s+/g, ' ').trim().slice(0, 260),
+                    excerpt,
+                    sectionHeading,
+                    mode: block.type === 'checklist' ? 'checklist' : 'block',
+                    stats: [`Using ${previewBlocks.length} blocks`, activeDocument.title],
+                  });
+                }}
               />
             ) : (
               <section className="docs-home" aria-label="Docs home">
@@ -967,6 +1116,80 @@ export default function DocsWorkspace({ sidebar }: { sidebar: ReactNode }) {
           </section>
         </div>
       </main>
+      {taskContextModal && activeDocument ? (
+        <div className="context-task-modal__scrim" role="presentation">
+          <div className="context-task-modal" role="dialog" aria-modal="true" aria-label="Run doc block as task">
+            <header className="context-task-modal__header">
+              <div>
+                <p className="context-task-modal__eyebrow">Doc context</p>
+                <h3>Run as task</h3>
+              </div>
+              <button
+                type="button"
+                className="docs-editor__icon"
+                aria-label="Close run as task dialog"
+                onClick={() => {
+                  setTaskContextModal(null);
+                }}
+              >
+                <ChevronLeftIcon className="glyph-14" />
+              </button>
+            </header>
+            <label className="context-task-modal__field">
+              <span>Task title</span>
+              <input
+                value={taskContextModal.title}
+                onChange={(event) => {
+                  setTaskContextModal((current) => (current ? { ...current, title: event.target.value } : current));
+                }}
+              />
+            </label>
+            <p className="context-task-modal__summary">{taskContextModal.objective}</p>
+            <div className="context-task-modal__stats">
+              {taskContextModal.stats.map((stat) => (
+                <span key={stat}>{stat}</span>
+              ))}
+            </div>
+            <pre className="context-task-modal__excerpt">{taskContextModal.excerpt}</pre>
+            <div className="context-task-modal__actions">
+              <button
+                type="button"
+                className="tasks-soft-button"
+                onClick={() => {
+                  setTaskContextModal(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="tasks-primary-button"
+                disabled={creatingContextTask || taskContextModal.title.trim().length === 0}
+                onClick={() => {
+                  onCreateTaskFromContext({
+                    origin: 'doc_selection',
+                    title: taskContextModal.title,
+                    objective: taskContextModal.objective,
+                    docSelection: {
+                      docId: activeDocument.docId,
+                      blockId: taskContextModal.blockId,
+                      mode: taskContextModal.mode,
+                    },
+                    writeback: {
+                      docId: activeDocument.docId,
+                      docTitle: activeDocument.title,
+                      docSectionHeading: taskContextModal.sectionHeading,
+                    },
+                  });
+                  setTaskContextModal(null);
+                }}
+              >
+                {creatingContextTask ? 'Creating…' : 'Create task'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

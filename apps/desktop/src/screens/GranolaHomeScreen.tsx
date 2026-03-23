@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type Dispatch, type KeyboardEvent, type ReactNode, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionPill, IconButton, SidebarItem, TimelineRow } from '../design-system/primitives';
 import {
   BuildingsIcon,
@@ -35,17 +35,21 @@ import TasksWorkspaceScreen from './TasksWorkspace';
 import AISettingsScreen from './AISettingsScreen';
 import type {
   CodexAIStatus,
+  ContextPacket,
   GranolaChatHome,
+  GranolaChatMessage,
   GranolaChatRecipe,
   GranolaChatThread,
   HomeFeed,
   HomeNoteDetail,
   HomeRecentNote,
   HomeUpcomingMeeting,
+  TaskCreateFromContextInput,
   TaskChatMessage,
   TaskPlanningContext,
   TaskSuggestionDeck,
   TaskStartOptions,
+  TaskWritebackTarget,
   TasksFeed,
   TasksRealtimeEvent,
   TasksWorkspace,
@@ -897,6 +901,141 @@ function previewForTeamMessage(content: string): string {
   return `${normalized.slice(0, 75)}...`;
 }
 
+function buildChatTaskPreview(
+  thread: GranolaChatThread | null,
+  mode: 'message' | 'thread',
+  anchorMessageId: string | null,
+): {
+  title: string;
+  objective: string;
+  excerpt: string;
+  stats: string[];
+} {
+  const ordered = [...(thread?.messages ?? [])].sort(
+    (left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt),
+  );
+  if (ordered.length === 0) {
+    return {
+      title: thread?.title || 'New context task',
+      objective: 'Create a task from the current chat context.',
+      excerpt: 'No messages available.',
+      stats: [],
+    };
+  }
+
+  const selected =
+    mode === 'thread'
+      ? ordered.slice(-24)
+      : (() => {
+          const anchorIndex = ordered.findIndex((message) => message.messageId === anchorMessageId);
+          if (anchorIndex < 0) {
+            return ordered.slice(-12);
+          }
+          const start = Math.max(0, anchorIndex - 12);
+          const end = Math.min(ordered.length, anchorIndex + 13);
+          return ordered.slice(start, end);
+        })();
+  const anchor = selected.find((message) => message.messageId === anchorMessageId) ?? selected[selected.length - 1] ?? ordered[ordered.length - 1];
+  const excerpt = selected
+    .map((message) => `${message.role}: ${message.content.replace(/\s+/g, ' ').trim()}`)
+    .join('\n')
+    .slice(0, 1400);
+
+  return {
+    title: (anchor?.content || thread?.title || 'Chat task').replace(/\s+/g, ' ').trim().slice(0, 120),
+    objective: excerpt.replace(/\n+/g, ' ').trim().slice(0, 280),
+    excerpt,
+    stats: [`Using ${selected.length} messages`, `Thread · ${thread?.title || 'Chat'}`],
+  };
+}
+
+function buildTeamThreadTaskPreview(
+  thread: TeamChatThread,
+  mode: 'message' | 'thread',
+  anchorMessageId: string | null,
+): {
+  title: string;
+  objective: string;
+  excerpt: string;
+  stats: string[];
+  messages: Array<{
+    messageId: string;
+    author: string;
+    content: string;
+    createdAt: string;
+  }>;
+} {
+  const baseTime = Date.parse('2026-03-23T09:00:00.000Z');
+  const ordered = thread.messages.map((message, index) => ({
+    messageId: message.id,
+    author: message.author,
+    content: [
+      message.content,
+      ...(message.attachments?.map((attachment) => `${attachment.title} (${attachment.meta})`) ?? []),
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    createdAt: new Date(baseTime + index * 60_000).toISOString(),
+  }));
+
+  if (ordered.length === 0) {
+    return {
+      title: thread.title,
+      objective: `Create a task from ${thread.title}.`,
+      excerpt: 'No messages available.',
+      stats: [],
+      messages: [],
+    };
+  }
+
+  const selected =
+    mode === 'thread'
+      ? ordered.slice(-24)
+      : (() => {
+          const anchorIndex = ordered.findIndex((message) => message.messageId === anchorMessageId);
+          if (anchorIndex < 0) {
+            return ordered.slice(-12);
+          }
+          const start = Math.max(0, anchorIndex - 12);
+          const end = Math.min(ordered.length, anchorIndex + 13);
+          return ordered.slice(start, end);
+        })();
+  const anchor = selected.find((message) => message.messageId === anchorMessageId) ?? selected[selected.length - 1] ?? ordered[ordered.length - 1];
+  const excerpt = selected
+    .map((message) => `${message.author}: ${message.content.replace(/\s+/g, ' ').trim()}`)
+    .join('\n')
+    .slice(0, 1400);
+
+  return {
+    title: (anchor?.content || thread.title || 'Chat task').replace(/\s+/g, ' ').trim().slice(0, 120),
+    objective: excerpt.replace(/\n+/g, ' ').trim().slice(0, 280),
+    excerpt,
+    stats: [`Using ${selected.length} messages`, `${thread.kind === 'channel' ? 'Channel' : 'Conversation'} · ${thread.title}`],
+    messages: selected,
+  };
+}
+
+function deriveTaskWritebackContent(
+  taskTitle: string,
+  taskSummary: string | null | undefined,
+  messages: TaskChatMessage[],
+  contextExcerpt: string | null | undefined,
+): string {
+  const latestAssistant = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant' && message.content.replace(/\s+/g, ' ').trim().length > 0);
+  const latestSystem = [...messages]
+    .reverse()
+    .find((message) => message.role === 'system' && message.content.replace(/\s+/g, ' ').trim().length > 0);
+  const content =
+    latestAssistant?.content?.trim() ||
+    latestSystem?.content?.trim() ||
+    taskSummary?.trim() ||
+    contextExcerpt?.trim() ||
+    taskTitle;
+  return content.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function AiChatView({
   chatHome,
   chatHomeLoading,
@@ -914,6 +1053,8 @@ function AiChatView({
   chatSending,
   chatSendElapsedSeconds,
   chatPendingActionLabel,
+  onCreateTaskFromContext,
+  creatingContextTask,
 }: {
   chatHome: GranolaChatHome | null;
   chatHomeLoading: boolean;
@@ -931,9 +1072,19 @@ function AiChatView({
   chatSending: boolean;
   chatSendElapsedSeconds: number;
   chatPendingActionLabel: string | null;
+  onCreateTaskFromContext: (input: TaskCreateFromContextInput) => void;
+  creatingContextTask: boolean;
 }) {
   const [showAllRecipes, setShowAllRecipes] = useState(false);
   const [showAllRecents, setShowAllRecents] = useState(false);
+  const [taskModal, setTaskModal] = useState<{
+    title: string;
+    objective: string;
+    mode: 'message' | 'thread';
+    anchorMessageId: string | null;
+    stats: string[];
+    excerpt: string;
+  } | null>(null);
 
   const recipes = chatHome?.recipes ?? [];
   const featuredRecipes = recipes.slice(0, 5);
@@ -965,6 +1116,21 @@ function AiChatView({
       }
     },
     [submitComposer],
+  );
+
+  const openTaskModal = useCallback(
+    (mode: 'message' | 'thread', anchorMessageId: string | null) => {
+      const preview = buildChatTaskPreview(chatThread, mode, anchorMessageId);
+      setTaskModal({
+        title: preview.title,
+        objective: preview.objective,
+        mode,
+        anchorMessageId,
+        stats: preview.stats,
+        excerpt: preview.excerpt,
+      });
+    },
+    [chatThread],
   );
 
   return (
@@ -1133,10 +1299,23 @@ function AiChatView({
               </button>
             </div>
 
-            <button type="button" className="granola-chat-thread__new" onClick={onNewChat}>
-              <ComposeIcon className="glyph-14" />
-              <span>New chat</span>
-            </button>
+            <div className="granola-chat-thread__topbar-actions">
+              <button
+                type="button"
+                className="granola-chat-thread__new"
+                onClick={() => {
+                  openTaskModal('thread', null);
+                }}
+                disabled={!chatThread || creatingContextTask}
+              >
+                <PlanPlusIcon className="glyph-14" />
+                <span>{creatingContextTask ? 'Creating…' : 'Create task'}</span>
+              </button>
+              <button type="button" className="granola-chat-thread__new" onClick={onNewChat}>
+                <ComposeIcon className="glyph-14" />
+                <span>New chat</span>
+              </button>
+            </div>
           </header>
 
           <div className="granola-chat-thread__body">
@@ -1157,6 +1336,18 @@ function AiChatView({
                   <div key={message.messageId} className="granola-chat-thread__user-block">
                     <ChatScopeCard />
                     <div className="granola-chat-thread__user-bubble">{message.content}</div>
+                    <div className="granola-chat-thread__message-actions">
+                      <button
+                        type="button"
+                        className="granola-chat-thread__icon-button"
+                        aria-label="Create task from this message"
+                        onClick={() => {
+                          openTaskModal('message', message.messageId);
+                        }}
+                      >
+                        <PlanPlusIcon className="glyph-14" />
+                      </button>
+                    </div>
                   </div>
                 );
               }
@@ -1189,6 +1380,16 @@ function AiChatView({
                         }}
                       >
                         Say more
+                      </button>
+                      <button
+                        type="button"
+                        className="granola-chat-thread__icon-button"
+                        aria-label="Create task from this answer"
+                        onClick={() => {
+                          openTaskModal('message', message.messageId);
+                        }}
+                      >
+                        <PlanPlusIcon className="glyph-14" />
                       </button>
                       <button
                         type="button"
@@ -1270,6 +1471,76 @@ function AiChatView({
               </button>
             </div>
           </footer>
+
+          {taskModal ? (
+            <div className="context-task-modal__scrim" role="presentation">
+              <div className="context-task-modal" role="dialog" aria-modal="true" aria-label="Create task from chat">
+                <header className="context-task-modal__header">
+                  <div>
+                    <p className="context-task-modal__eyebrow">Chat context</p>
+                    <h3>Create task</h3>
+                  </div>
+                  <button
+                    type="button"
+                    className="granola-chat-thread__icon-button"
+                    aria-label="Close create task dialog"
+                    onClick={() => {
+                      setTaskModal(null);
+                    }}
+                  >
+                    <ChevronLeftIcon className="glyph-14" />
+                  </button>
+                </header>
+                <label className="context-task-modal__field">
+                  <span>Task title</span>
+                  <input
+                    value={taskModal.title}
+                    onChange={(event) => {
+                      setTaskModal((current) => (current ? { ...current, title: event.target.value } : current));
+                    }}
+                  />
+                </label>
+                <p className="context-task-modal__summary">{taskModal.objective}</p>
+                <div className="context-task-modal__stats">
+                  {taskModal.stats.map((stat) => (
+                    <span key={stat}>{stat}</span>
+                  ))}
+                </div>
+                <pre className="context-task-modal__excerpt">{taskModal.excerpt}</pre>
+                <div className="context-task-modal__actions">
+                  <button
+                    type="button"
+                    className="tasks-soft-button"
+                    onClick={() => {
+                      setTaskModal(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="tasks-primary-button"
+                    disabled={creatingContextTask || taskModal.title.trim().length === 0}
+                    onClick={() => {
+                      onCreateTaskFromContext({
+                        origin: 'chat_selection',
+                        title: taskModal.title,
+                        objective: taskModal.objective,
+                        chatSelection: {
+                          threadId: chatThread?.threadId ?? selectedChatThreadId ?? '',
+                          anchorMessageId: taskModal.anchorMessageId,
+                          mode: taskModal.mode,
+                        },
+                      });
+                      setTaskModal(null);
+                    }}
+                  >
+                    {creatingContextTask ? 'Creating…' : 'Create task'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
       )}
     </div>
@@ -1281,12 +1552,31 @@ function TeamThreadView({
   composerText,
   onComposerTextChange,
   onSend,
+  onCreateTaskFromContext,
+  creatingContextTask,
 }: {
   thread: TeamChatThread;
   composerText: string;
   onComposerTextChange: (value: string) => void;
   onSend: () => void;
+  onCreateTaskFromContext: (input: TaskCreateFromContextInput) => void;
+  creatingContextTask: boolean;
 }) {
+  const [taskModal, setTaskModal] = useState<{
+    title: string;
+    objective: string;
+    mode: 'message' | 'thread';
+    anchorMessageId: string | null;
+    stats: string[];
+    excerpt: string;
+    messages: Array<{
+      messageId: string;
+      author: string;
+      content: string;
+      createdAt: string;
+    }>;
+  } | null>(null);
+
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -1295,6 +1585,22 @@ function TeamThreadView({
       }
     },
     [onSend],
+  );
+
+  const openTaskModal = useCallback(
+    (mode: 'message' | 'thread', anchorMessageId: string | null) => {
+      const preview = buildTeamThreadTaskPreview(thread, mode, anchorMessageId);
+      setTaskModal({
+        title: preview.title,
+        objective: preview.objective,
+        mode,
+        anchorMessageId,
+        stats: preview.stats,
+        excerpt: preview.excerpt,
+        messages: preview.messages,
+      });
+    },
+    [thread],
   );
 
   return (
@@ -1319,6 +1625,17 @@ function TeamThreadView({
         </div>
 
         <div className="granola-team-thread__actions">
+          <button
+            type="button"
+            className="granola-chat-thread__new granola-team-thread__create-task"
+            onClick={() => {
+              openTaskModal('thread', null);
+            }}
+            disabled={creatingContextTask}
+          >
+            <PlanPlusIcon className="glyph-14" />
+            <span>{creatingContextTask ? 'Creating…' : 'Create task'}</span>
+          </button>
           <button type="button" className="granola-team-thread__icon" aria-label="Search conversation" disabled>
             <SearchIcon className="glyph-14" />
           </button>
@@ -1369,6 +1686,18 @@ function TeamThreadView({
                     </div>
                   ) : null}
                 </div>
+                <div className="granola-team-thread__message-actions">
+                  <button
+                    type="button"
+                    className="granola-chat-thread__icon-button"
+                    aria-label={`Create task from ${message.author}'s message`}
+                    onClick={() => {
+                      openTaskModal('message', message.id);
+                    }}
+                  >
+                    <PlanPlusIcon className="glyph-14" />
+                  </button>
+                </div>
               </div>
             </article>
           ))}
@@ -1403,6 +1732,81 @@ function TeamThreadView({
           </button>
         </div>
       </footer>
+
+      {taskModal ? (
+        <div className="context-task-modal__scrim" role="presentation">
+          <div className="context-task-modal" role="dialog" aria-modal="true" aria-label="Create task from team thread">
+            <header className="context-task-modal__header">
+              <div>
+                <p className="context-task-modal__eyebrow">Chat context</p>
+                <h3>Create task</h3>
+              </div>
+              <button
+                type="button"
+                className="granola-chat-thread__icon-button"
+                aria-label="Close create task dialog"
+                onClick={() => {
+                  setTaskModal(null);
+                }}
+              >
+                <ChevronLeftIcon className="glyph-14" />
+              </button>
+            </header>
+            <label className="context-task-modal__field">
+              <span>Task title</span>
+              <input
+                value={taskModal.title}
+                onChange={(event) => {
+                  setTaskModal((current) => (current ? { ...current, title: event.target.value } : current));
+                }}
+              />
+            </label>
+            <p className="context-task-modal__summary">{taskModal.objective}</p>
+            <div className="context-task-modal__stats">
+              {taskModal.stats.map((stat) => (
+                <span key={stat}>{stat}</span>
+              ))}
+            </div>
+            <pre className="context-task-modal__excerpt">{taskModal.excerpt}</pre>
+            <div className="context-task-modal__actions">
+              <button
+                type="button"
+                className="tasks-soft-button"
+                onClick={() => {
+                  setTaskModal(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="tasks-primary-button"
+                disabled={creatingContextTask || taskModal.title.trim().length === 0}
+                onClick={() => {
+                  onCreateTaskFromContext({
+                    origin: 'chat_selection',
+                    title: taskModal.title,
+                    objective: taskModal.objective,
+                    chatSelection: {
+                      threadId: `team-thread:${thread.id}`,
+                      threadTitle: thread.title,
+                      anchorMessageId: taskModal.anchorMessageId,
+                      mode: taskModal.mode,
+                      messages: taskModal.messages,
+                    },
+                    writeback: {
+                      chatThreadId: `team-thread:${thread.id}`,
+                    },
+                  });
+                  setTaskModal(null);
+                }}
+              >
+                {creatingContextTask ? 'Creating…' : 'Create task'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1425,6 +1829,10 @@ function GranolaChatPane({
   chatSending,
   chatSendElapsedSeconds,
   chatPendingActionLabel,
+  onCreateTaskFromContext,
+  creatingContextTask,
+  teamThreads,
+  onTeamThreadsChange,
 }: {
   sidebar: ReactNode;
   chatHome: GranolaChatHome | null;
@@ -1443,10 +1851,13 @@ function GranolaChatPane({
   chatSending: boolean;
   chatSendElapsedSeconds: number;
   chatPendingActionLabel: string | null;
+  onCreateTaskFromContext: (input: TaskCreateFromContextInput) => void;
+  creatingContextTask: boolean;
+  teamThreads: TeamChatThread[];
+  onTeamThreadsChange: Dispatch<SetStateAction<TeamChatThread[]>>;
 }) {
   const [activeSurface, setActiveSurface] = useState<ChatSurfaceSelection>({ kind: 'ai' });
   const [chatNavigatorQuery, setChatNavigatorQuery] = useState('');
-  const [teamThreads, setTeamThreads] = useState<TeamChatThread[]>(TEAM_CHAT_SEED);
   const [teamComposerDrafts, setTeamComposerDrafts] = useState<Record<string, string>>({});
 
   const filteredTeamThreads = useMemo(
@@ -1477,10 +1888,10 @@ function GranolaChatPane({
 
   const handleOpenTeamThread = useCallback((threadId: string) => {
     setActiveSurface({ kind: 'team', threadId });
-    setTeamThreads((current) =>
+    onTeamThreadsChange((current) =>
       current.map((thread) => (thread.id === threadId ? { ...thread, unreadCount: 0 } : thread)),
     );
-  }, []);
+  }, [onTeamThreadsChange]);
 
   const handleTeamDraftChange = useCallback((threadId: string, value: string) => {
     setTeamComposerDrafts((current) => ({
@@ -1505,7 +1916,7 @@ function GranolaChatPane({
       content: text,
       isOwn: true,
     };
-    setTeamThreads((current) =>
+    onTeamThreadsChange((current) =>
       current.map((thread) =>
         thread.id === selectedTeamThread.id
           ? {
@@ -1522,7 +1933,7 @@ function GranolaChatPane({
       ...current,
       [selectedTeamThread.id]: '',
     }));
-  }, [selectedTeamThread, teamComposerDrafts]);
+  }, [onTeamThreadsChange, selectedTeamThread, teamComposerDrafts]);
 
   return (
     <div className="granola-frame granola-frame--chat">
@@ -1626,6 +2037,8 @@ function GranolaChatPane({
                 chatSending={chatSending}
                 chatSendElapsedSeconds={chatSendElapsedSeconds}
                 chatPendingActionLabel={chatPendingActionLabel}
+                onCreateTaskFromContext={onCreateTaskFromContext}
+                creatingContextTask={creatingContextTask}
               />
             ) : selectedTeamThread ? (
               <TeamThreadView
@@ -1635,6 +2048,8 @@ function GranolaChatPane({
                   handleTeamDraftChange(selectedTeamThread.id, value);
                 }}
                 onSend={handleSendTeamMessage}
+                onCreateTaskFromContext={onCreateTaskFromContext}
+                creatingContextTask={creatingContextTask}
               />
             ) : null}
           </div>
@@ -1668,6 +2083,7 @@ export default function GranolaHomeScreen() {
   const [chatSendStartedAt, setChatSendStartedAt] = useState<number | null>(null);
   const [chatSendElapsedSeconds, setChatSendElapsedSeconds] = useState(0);
   const [chatPendingActionLabel, setChatPendingActionLabel] = useState<string | null>(null);
+  const [teamThreads, setTeamThreads] = useState<TeamChatThread[]>(TEAM_CHAT_SEED);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isReconnectingExecutor, setIsReconnectingExecutor] = useState(false);
@@ -1689,6 +2105,11 @@ export default function GranolaHomeScreen() {
   const [planSuggestionsLoading, setPlanSuggestionsLoading] = useState(false);
   const [nextMoveSuggestions, setNextMoveSuggestions] = useState<TaskSuggestionDeck | null>(null);
   const [nextMoveSuggestionsLoading, setNextMoveSuggestionsLoading] = useState(false);
+  const [contextPacket, setContextPacket] = useState<ContextPacket | null>(null);
+  const [contextPacketLoading, setContextPacketLoading] = useState(false);
+  const [contextPacketError, setContextPacketError] = useState<string | null>(null);
+  const [isWritingBackTarget, setIsWritingBackTarget] = useState<'chat' | 'doc' | 'followup' | null>(null);
+  const [creatingContextTask, setCreatingContextTask] = useState(false);
   const [executingSuggestionActionId, setExecutingSuggestionActionId] = useState<string | null>(null);
   const [aiStatus, setAIStatus] = useState<CodexAIStatus | null>(null);
   const [aiError, setAIError] = useState<string | null>(null);
@@ -2031,19 +2452,40 @@ export default function GranolaHomeScreen() {
     }
   }, []);
 
+  const fetchContextPacket = useCallback(async (todoId: string): Promise<void> => {
+    if (!todoId) {
+      setContextPacket(null);
+      setContextPacketError(null);
+      return;
+    }
+    setContextPacketLoading(true);
+    try {
+      const packet = await granolaClient.tasksGetContextPacket(todoId);
+      setContextPacket(packet);
+      setContextPacketError(null);
+    } catch (error) {
+      setContextPacket(null);
+      setContextPacketError(error instanceof Error ? error.message : 'Unable to load task context packet.');
+    } finally {
+      setContextPacketLoading(false);
+    }
+  }, []);
+
   const openTaskChat = useCallback(
     async (todoId: string) => {
       setSelectedTodoId(todoId);
       setLiveStatus(null);
       setPlanSuggestions(null);
       setNextMoveSuggestions(null);
+      setContextPacket(null);
       setExecutingSuggestionActionId(null);
       await fetchThread(todoId, null, false);
       await fetchPlanningContext(todoId);
+      await fetchContextPacket(todoId);
       await fetchPlanSuggestions(todoId);
       scrollMessagesToBottom(false);
     },
-    [fetchPlanSuggestions, fetchPlanningContext, fetchThread, scrollMessagesToBottom],
+    [fetchContextPacket, fetchPlanSuggestions, fetchPlanningContext, fetchThread, scrollMessagesToBottom],
   );
 
   const scheduleFeedRefresh = useCallback(() => {
@@ -2077,7 +2519,8 @@ export default function GranolaHomeScreen() {
     }
     void fetchThread(selectedTodoId, null, false);
     void fetchPlanningContext(selectedTodoId);
-  }, [activeTab, fetchPlanningContext, fetchThread, selectedTodoId]);
+    void fetchContextPacket(selectedTodoId);
+  }, [activeTab, fetchContextPacket, fetchPlanningContext, fetchThread, selectedTodoId]);
 
   useEffect(() => {
     if (!selectedTodoId || activeTab !== 'tasks') {
@@ -2509,6 +2952,119 @@ export default function GranolaHomeScreen() {
     [executingSuggestionActionId, fetchTasksFeed, fetchThread, selectedTodoId],
   );
 
+  const handleCreateTaskFromContext = useCallback(
+    async (input: TaskCreateFromContextInput) => {
+      if (creatingContextTask) {
+        return;
+      }
+      setCreatingContextTask(true);
+      try {
+        const result = await granolaClient.tasksCreateFromContext(input);
+        await fetchTasksFeed();
+        setActiveTab('tasks');
+        await openTaskChat(result.todoId);
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to create task from context.');
+      } finally {
+        setCreatingContextTask(false);
+      }
+    },
+    [creatingContextTask, fetchTasksFeed, openTaskChat],
+  );
+
+  const handleUpdateWriteback = useCallback(
+    async (patch: Partial<TaskWritebackTarget>) => {
+      if (!selectedTodoId) {
+        return;
+      }
+      try {
+        await granolaClient.tasksSetWriteback(selectedTodoId, patch);
+        await fetchContextPacket(selectedTodoId);
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to update write-back target.');
+      }
+    },
+    [fetchContextPacket, selectedTodoId],
+  );
+
+  const handleTaskWriteback = useCallback(
+    async (target: 'chat' | 'doc' | 'followup') => {
+      if (!selectedTodoId || isWritingBackTarget) {
+        return;
+      }
+      setIsWritingBackTarget(target);
+      try {
+        if (target === 'chat' && contextPacket?.writeback.chatThreadId?.startsWith('team-thread:')) {
+          const linkedThreadId = contextPacket.writeback.chatThreadId.replace(/^team-thread:/, '');
+          const content = deriveTaskWritebackContent(
+            selectedTask?.title || 'Task update',
+            selectedTask?.publicSummary,
+            threadMessages,
+            contextPacket.preview.excerpt,
+          );
+          if (!content.trim()) {
+            setTasksError('There is no task output to post to chat yet.');
+            return;
+          }
+          const now = new Date().toISOString();
+          setTeamThreads((current) =>
+            current.map((thread) =>
+              thread.id === linkedThreadId
+                ? {
+                    ...thread,
+                    preview: `Yogurt: ${previewForTeamMessage(content)}`,
+                    timestampLabel: 'Now',
+                    unreadCount: 0,
+                    messages: [
+                      ...thread.messages,
+                      {
+                        id: createClientSideId('team-chat-task-update'),
+                        author: 'Yogurt',
+                        sentAtLabel: formatClock(now),
+                        content: `Task update: ${selectedTask?.title || 'Task'}\n\n${content}`,
+                      },
+                    ],
+                  }
+                : thread,
+            ),
+          );
+          setTasksError(null);
+          return;
+        }
+        const result = await granolaClient.tasksWriteBack(selectedTodoId, target);
+        if (!result.ok && result.message) {
+          setTasksError(result.message);
+        } else {
+          setTasksError(null);
+        }
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : 'Unable to complete write-back.');
+      } finally {
+        setIsWritingBackTarget(null);
+        await fetchContextPacket(selectedTodoId);
+        await fetchTasksFeed();
+        if (target === 'followup') {
+          await fetchThread(selectedTodoId, null, false);
+        }
+        if (contextPacket?.writeback.chatThreadId && !contextPacket.writeback.chatThreadId.startsWith('team-thread:')) {
+          await fetchChatHome();
+        }
+      }
+    },
+    [
+      contextPacket,
+      fetchChatHome,
+      fetchContextPacket,
+      fetchTasksFeed,
+      fetchThread,
+      isWritingBackTarget,
+      selectedTask,
+      selectedTodoId,
+      setTeamThreads,
+      threadMessages,
+    ],
+  );
+
   const handleCancelRun = useCallback(async () => {
     if (!selectedTodoId) {
       return;
@@ -2746,12 +3302,26 @@ export default function GranolaHomeScreen() {
         chatSending={chatSending}
         chatSendElapsedSeconds={chatSendElapsedSeconds}
         chatPendingActionLabel={chatPendingActionLabel}
+        onCreateTaskFromContext={(input) => {
+          void handleCreateTaskFromContext(input);
+        }}
+        creatingContextTask={creatingContextTask}
+        teamThreads={teamThreads}
+        onTeamThreadsChange={setTeamThreads}
       />
     );
   }
 
   if (activeTab === 'docs') {
-    return <DocsWorkspace sidebar={sidebar} />;
+    return (
+      <DocsWorkspace
+        sidebar={sidebar}
+        onCreateTaskFromContext={(input) => {
+          void handleCreateTaskFromContext(input);
+        }}
+        creatingContextTask={creatingContextTask}
+      />
+    );
   }
 
   if (activeTab === 'ai') {
@@ -2808,6 +3378,10 @@ export default function GranolaHomeScreen() {
       planSuggestionsLoading={planSuggestionsLoading}
       nextMoveSuggestions={nextMoveSuggestions}
       nextMoveSuggestionsLoading={nextMoveSuggestionsLoading}
+      contextPacket={contextPacket}
+      contextPacketLoading={contextPacketLoading}
+      contextPacketError={contextPacketError}
+      writebackPendingTarget={isWritingBackTarget}
       executingSuggestionActionId={executingSuggestionActionId}
       selectedStartOptions={selectedStartOptions}
       plannerSelectionValid={plannerSelectionValid}
@@ -2869,6 +3443,12 @@ export default function GranolaHomeScreen() {
       isSummarizingTask={isSummarizingTask}
       onRunSuggestion={(input) => {
         void handleExecuteSuggestion(input);
+      }}
+      onUpdateWriteback={(patch) => {
+        void handleUpdateWriteback(patch);
+      }}
+      onWriteback={(target) => {
+        void handleTaskWriteback(target);
       }}
     />
   );

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type {
+  DocVersionSummary,
   DocsBlock,
   DocsDisplayMode,
   DocsDocument,
@@ -13,11 +14,16 @@ export interface DocsWorkspaceState {
   displayMode: DocsDisplayMode;
 }
 
+export interface DocsVersionRecord extends DocVersionSummary {
+  snapshot: DocsDocument;
+}
+
 export interface GranolaDocsStoreDocument {
-  version: 1;
+  version: 2;
   savedAt: string | null;
   workspace: DocsWorkspaceState;
   documents: Record<string, DocsDocument>;
+  versionsByDocId: Record<string, DocsVersionRecord[]>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -120,12 +126,43 @@ function normalizeDocument(raw: unknown): DocsDocument | null {
 
 function defaultDocument(): GranolaDocsStoreDocument {
   return {
-    version: 1,
+    version: 2,
     savedAt: null,
     workspace: {
       displayMode: 'list',
     },
     documents: {},
+    versionsByDocId: {},
+  };
+}
+
+function normalizeVersion(raw: unknown): DocsVersionRecord | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const versionId = typeof raw.versionId === 'string' ? raw.versionId.trim() : '';
+  const docId = typeof raw.docId === 'string' ? raw.docId.trim() : '';
+  const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : '';
+  const label = typeof raw.label === 'string' ? raw.label.trim() : '';
+  const preview = typeof raw.preview === 'string' ? raw.preview : '';
+  const snapshot = normalizeDocument(raw.snapshot);
+  if (!versionId || !docId || !createdAt || !label || !snapshot) {
+    return null;
+  }
+  return {
+    versionId,
+    docId,
+    createdAt,
+    label,
+    preview,
+    sourceTaskId: typeof raw.sourceTaskId === 'string' && raw.sourceTaskId.trim() ? raw.sourceTaskId.trim() : null,
+    sourcePacketId:
+      typeof raw.sourcePacketId === 'string' && raw.sourcePacketId.trim() ? raw.sourcePacketId.trim() : null,
+    restoredFromVersionId:
+      typeof raw.restoredFromVersionId === 'string' && raw.restoredFromVersionId.trim()
+        ? raw.restoredFromVersionId.trim()
+        : null,
+    snapshot,
   };
 }
 
@@ -149,15 +186,25 @@ export class GranolaDocsStore {
         }
       }
 
+      const versionsRaw = isRecord(parsed.versionsByDocId) ? parsed.versionsByDocId : {};
+      const versionsByDocId: Record<string, DocsVersionRecord[]> = {};
+      for (const [docId, value] of Object.entries(versionsRaw)) {
+        const versions = Array.isArray(value)
+          ? value.map((item) => normalizeVersion(item)).filter((item): item is DocsVersionRecord => item !== null)
+          : [];
+        versionsByDocId[docId] = versions;
+      }
+
       const workspaceRaw = isRecord(parsed.workspace) ? parsed.workspace : {};
 
       return {
-        version: 1,
+        version: 2,
         savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : null,
         workspace: {
           displayMode: isDisplayMode(workspaceRaw.displayMode) ? workspaceRaw.displayMode : 'list',
         },
         documents,
+        versionsByDocId,
       };
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
@@ -171,6 +218,8 @@ export class GranolaDocsStore {
     const fallback = defaultDocument();
     const documentsRaw = isRecord(document.documents) ? document.documents : {};
     const documents: Record<string, DocsDocument> = {};
+    const versionsRaw = isRecord(document.versionsByDocId) ? document.versionsByDocId : {};
+    const versionsByDocId: Record<string, DocsVersionRecord[]> = {};
 
     for (const [docId, value] of Object.entries(documentsRaw)) {
       const normalized = normalizeDocument(value);
@@ -179,15 +228,22 @@ export class GranolaDocsStore {
       }
     }
 
+    for (const [docId, value] of Object.entries(versionsRaw)) {
+      versionsByDocId[docId] = Array.isArray(value)
+        ? value.map((item) => normalizeVersion(item)).filter((item): item is DocsVersionRecord => item !== null)
+        : [];
+    }
+
     const payload: GranolaDocsStoreDocument = {
       ...fallback,
       ...document,
-      version: 1,
+      version: 2,
       savedAt: new Date().toISOString(),
       workspace: {
         displayMode: isDisplayMode(document.workspace?.displayMode) ? document.workspace.displayMode : 'list',
       },
       documents,
+      versionsByDocId,
     };
 
     await writeAtomic(this.filePath, `${JSON.stringify(payload, null, 2)}\n`);

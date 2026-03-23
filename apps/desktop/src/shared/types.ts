@@ -632,6 +632,17 @@ export interface DocsDocument extends DocsDocumentSummary {
   blocks: DocsBlock[];
 }
 
+export interface DocVersionSummary {
+  versionId: string;
+  docId: string;
+  createdAt: string;
+  label: string;
+  sourceTaskId?: string | null;
+  sourcePacketId?: string | null;
+  restoredFromVersionId?: string | null;
+  preview: string;
+}
+
 export interface DocsCreateInput {
   templateId?: string | null;
   section?: DocsSection | null;
@@ -645,6 +656,98 @@ export interface DocsUpdatePatch {
   pinned?: boolean;
   iconTone?: DocsIconTone;
   blocks?: DocsBlock[];
+}
+
+export type ContextPacketOrigin = 'meeting_extraction' | 'chat_selection' | 'doc_selection' | 'mixed';
+export type ContextSourceKind = 'meeting' | 'chat' | 'doc';
+export type ChatContextSelectionMode = 'message' | 'thread';
+export type DocContextSelectionMode = 'block' | 'section' | 'checklist';
+
+interface BaseContextPacketSource {
+  kind: ContextSourceKind;
+  label: string;
+  excerpt: string;
+  citation: string;
+}
+
+export interface MeetingSourceRef extends BaseContextPacketSource {
+  kind: 'meeting';
+  meetingId: string;
+  meetingTitle: string;
+  noteUrl?: string | null;
+}
+
+export interface ChatSourceRef extends BaseContextPacketSource {
+  kind: 'chat';
+  threadId: string;
+  threadTitle: string;
+  anchorMessageId: string | null;
+  messageIds: string[];
+  mode: ChatContextSelectionMode;
+}
+
+export interface DocSourceRef extends BaseContextPacketSource {
+  kind: 'doc';
+  docId: string;
+  docTitle: string;
+  blockIds: string[];
+  sectionTitle: string | null;
+  versionId: string | null;
+  mode: DocContextSelectionMode;
+}
+
+export type ContextPacketSource = MeetingSourceRef | ChatSourceRef | DocSourceRef;
+
+export interface ContextPacketPreview {
+  summary: string;
+  stats: string[];
+  excerpt: string;
+}
+
+export interface TaskWritebackTarget {
+  chatThreadId: string | null;
+  docId: string | null;
+  docTitle: string | null;
+  docSectionHeading: string | null;
+}
+
+export interface ContextPacket {
+  packetId: string;
+  linkedTodoId: string;
+  title: string;
+  objective: string;
+  createdAt: string;
+  origin: ContextPacketOrigin;
+  sources: ContextPacketSource[];
+  people: string[];
+  entities: string[];
+  citations: string[];
+  preview: ContextPacketPreview;
+  writeback: TaskWritebackTarget;
+}
+
+export interface TaskCreateFromContextInput {
+  title?: string | null;
+  objective?: string | null;
+  origin: Exclude<ContextPacketOrigin, 'meeting_extraction'>;
+  chatSelection?: {
+    threadId: string;
+    threadTitle?: string | null;
+    anchorMessageId?: string | null;
+    mode: ChatContextSelectionMode;
+    messages?: Array<{
+      messageId: string;
+      author: string;
+      content: string;
+      createdAt: string;
+    }>;
+  };
+  docSelection?: {
+    docId: string;
+    blockId?: string | null;
+    mode: DocContextSelectionMode;
+  };
+  writeback?: Partial<TaskWritebackTarget>;
 }
 
 export interface GranolaAPI {
@@ -675,8 +778,17 @@ export interface GranolaAPI {
   docsGetDocument(docId: string): Promise<DocsDocument>;
   docsCreate(input?: DocsCreateInput): Promise<DocsDocument>;
   docsUpdate(docId: string, patch: DocsUpdatePatch): Promise<DocsDocument>;
+  docsGetHistory(docId: string): Promise<DocVersionSummary[]>;
+  docsRestoreVersion(docId: string, versionId: string): Promise<DocsDocument>;
   tasksGetFeed(): Promise<TasksFeed>;
   tasksGetWorkspace(): Promise<TasksWorkspace>;
+  tasksCreateFromContext(input: TaskCreateFromContextInput): Promise<{ todoId: string; packetId: string }>;
+  tasksGetContextPacket(todoId: string): Promise<ContextPacket>;
+  tasksSetWriteback(todoId: string, patch: Partial<TaskWritebackTarget>): Promise<void>;
+  tasksWriteBack(
+    todoId: string,
+    target: 'chat' | 'doc' | 'followup',
+  ): Promise<{ ok: boolean; artifactId?: string; message?: string }>;
   tasksUpdateMetadata(todoId: string, patch: TaskMetadataPatch): Promise<TaskWorkspaceItem>;
   tasksUpdateWorkspacePrefs(patch: TaskWorkspacePrefsPatch): Promise<TaskWorkspacePrefs>;
   tasksConnect(): Promise<{ ok: boolean; needsBrowser: boolean; message?: string }>;

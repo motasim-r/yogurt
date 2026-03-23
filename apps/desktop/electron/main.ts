@@ -7,8 +7,10 @@ import type {
   CodexAIActionInput,
   DocsCreateInput,
   DocsUpdatePatch,
+  TaskCreateFromContextInput,
   TaskMetadataPatch,
   TaskStartOptions,
+  TaskWritebackTarget,
   TaskWorkspacePrefsPatch,
   WindowCommand,
 } from '../src/shared/types.js';
@@ -162,8 +164,53 @@ function registerIpcHandlers(): void {
     }
     return withDocsService().docsUpdate(docId, patch as DocsUpdatePatch);
   });
+  ipcMain.handle(IPC_CHANNELS.docsGetHistory, (_event, docId: unknown) => {
+    if (typeof docId !== 'string') {
+      throw new Error('docId must be a string');
+    }
+    return withDocsService().docsGetHistory(docId);
+  });
+  ipcMain.handle(IPC_CHANNELS.docsRestoreVersion, (_event, docId: unknown, versionId: unknown) => {
+    if (typeof docId !== 'string') {
+      throw new Error('docId must be a string');
+    }
+    if (typeof versionId !== 'string') {
+      throw new Error('versionId must be a string');
+    }
+    return withDocsService().docsRestoreVersion(docId, versionId);
+  });
   ipcMain.handle(IPC_CHANNELS.tasksGetFeed, () => withTaskService().getFeed());
   ipcMain.handle(IPC_CHANNELS.tasksGetWorkspace, () => withTaskService().tasksGetWorkspace());
+  ipcMain.handle(IPC_CHANNELS.tasksCreateFromContext, (_event, input: unknown) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('context task input must be an object');
+    }
+    return withTaskService().tasksCreateFromContext(input as TaskCreateFromContextInput);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksGetContextPacket, (_event, todoId: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    return withTaskService().tasksGetContextPacket(todoId);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksSetWriteback, (_event, todoId: unknown, patch: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error('writeback patch must be an object');
+    }
+    return withTaskService().tasksSetWriteback(todoId, patch as Partial<TaskWritebackTarget>);
+  });
+  ipcMain.handle(IPC_CHANNELS.tasksWriteBack, (_event, todoId: unknown, target: unknown) => {
+    if (typeof todoId !== 'string') {
+      throw new Error('todoId must be a string');
+    }
+    if (target !== 'chat' && target !== 'doc' && target !== 'followup') {
+      throw new Error('target must be chat, doc, or followup');
+    }
+    return withTaskService().tasksWriteBack(todoId, target);
+  });
   ipcMain.handle(IPC_CHANNELS.tasksUpdateMetadata, (_event, todoId: unknown, patch: unknown) => {
     if (typeof todoId !== 'string') {
       throw new Error('todoId must be a string');
@@ -328,6 +375,8 @@ app.on('ready', async () => {
   app.setName('Yogurt');
   const granolaDataDir = path.join(app.getPath('userData'), 'granola');
 
+  docsService = new GranolaDocsService(granolaDataDir);
+  await docsService.init();
   taskService = new GranolaTaskService({
     dataDir: granolaDataDir,
     tokenEncryptionKey: process.env.TOKEN_ENCRYPTION_KEY,
@@ -338,13 +387,12 @@ app.on('ready', async () => {
       await shell.openExternal(url);
     },
     mcpUrl: process.env.GRANOLA_MCP_URL,
+    docsService,
   });
   await taskService.init();
   aiService = new CodexAIService({
     profile: process.env.IRONCLAW_PROFILE ?? 'ironclaw',
   });
-  docsService = new GranolaDocsService(granolaDataDir);
-  await docsService.init();
   taskEventUnsubscribe = taskService.onRealtimeEvent((event) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;

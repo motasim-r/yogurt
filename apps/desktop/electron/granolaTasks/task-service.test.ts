@@ -2846,4 +2846,66 @@ describe('GranolaTaskService', () => {
     expect(reloadedThread.messages.some((message) => message.role === 'assistant')).toBe(true);
     await reloaded.dispose();
   });
+
+  it('creates a context packet from explicit fallback chat messages when the thread is not in the Granola chat store', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+    });
+
+    await service.init();
+
+    const created = await service.tasksCreateFromContext({
+      origin: 'chat_selection',
+      title: 'Follow up on launch room',
+      objective: 'Turn the launch discussion into an execution task.',
+      chatSelection: {
+        threadId: 'team-thread:launch-war-room',
+        threadTitle: '#launch-war-room',
+        anchorMessageId: 'msg-2',
+        mode: 'message',
+        messages: [
+          {
+            messageId: 'msg-1',
+            author: 'Laura',
+            content: 'Please lock the narrative before 5pm.',
+            createdAt: '2026-03-23T09:14:00.000Z',
+          },
+          {
+            messageId: 'msg-2',
+            author: 'You',
+            content: 'I will tighten the story and drop the extra positioning slide.',
+            createdAt: '2026-03-23T09:25:00.000Z',
+          },
+          {
+            messageId: 'msg-3',
+            author: 'Laura',
+            content: 'Great. Post the final deck here tonight.',
+            createdAt: '2026-03-23T09:29:00.000Z',
+          },
+        ],
+      },
+      writeback: {
+        chatThreadId: 'team-thread:launch-war-room',
+      },
+    });
+
+    const packet = await service.tasksGetContextPacket(created.todoId);
+
+    expect(packet.origin).toBe('chat_selection');
+    expect(packet.sources[0]).toMatchObject({
+      kind: 'chat',
+      threadId: 'team-thread:launch-war-room',
+      threadTitle: '#launch-war-room',
+      anchorMessageId: 'msg-2',
+      mode: 'message',
+      messageIds: ['msg-1', 'msg-2', 'msg-3'],
+    });
+    expect(packet.preview.stats).toEqual(expect.arrayContaining(['1 chat source']));
+    expect(packet.writeback.chatThreadId).toBe('team-thread:launch-war-room');
+
+    await service.dispose();
+  });
 });

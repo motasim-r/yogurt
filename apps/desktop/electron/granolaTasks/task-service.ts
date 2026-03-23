@@ -20,6 +20,7 @@ import { TodoStore } from '../../../../packages/granola-pipeline/src/todo-store.
 import { TaskChatStore, type TaskChatStoreDocument } from './chat-store.js';
 import { GranolaChatStore, type GranolaChatStoreDocument, type PersistedGranolaChatThread } from './granola-chat-store.js';
 import { TaskWorkspaceStore, type TaskWorkspaceMetadataRecord } from './task-workspace-store.js';
+import { ContextPacketStore } from './context-packet-store.js';
 import { OAuthCallbackServer } from './oauth-callback.js';
 import { IronclawRuntime, type IronclawToolPayload } from '../../../../packages/execution-ironclaw/src/ironclaw-runtime.js';
 import { migrateLegacyOpenclawData, type LegacyDataMigrationStatus } from './data-migration.js';
@@ -39,6 +40,8 @@ import type {
   TodoStoreDocument,
 } from '../../../../packages/granola-pipeline/src/types.js';
 import type {
+  ContextPacket,
+  ContextPacketSource,
   GranolaChatHome,
   GranolaChatMessage,
   GranolaChatRecipe,
@@ -69,6 +72,8 @@ import type {
   TaskStartOptions,
   TaskAssignee,
   TaskBoardColumn,
+  TaskCreateFromContextInput,
+  TaskWritebackTarget,
   TaskWorkspaceItem,
   TaskWorkspacePrefs,
   TaskWorkspacePrefsPatch,
@@ -80,6 +85,7 @@ import type {
   TasksSyncHealth,
   TasksConnectionState,
 } from '../../src/shared/types.js';
+import type { GranolaDocsService } from './granola-docs-service.js';
 
 const URL_MATCHER = /https?:\/\/[^\s"'`<>]+/g;
 const execFileAsync = promisify(execFile);
@@ -106,6 +112,7 @@ interface GranolaTaskServiceOptions {
   openExternal?: (url: string) => Promise<void> | void;
   allowUnauthenticatedExtraction?: boolean;
   extractTodosForMeeting?: (meeting: GranolaMeeting, prompt: string) => Promise<string>;
+  docsService?: GranolaDocsService;
 }
 
 interface AuthState {
@@ -210,6 +217,13 @@ interface TaskWorkspaceRuntimeState {
   saveChain: Promise<void>;
   prefs: TaskWorkspacePrefs;
   metadataByTodoId: Record<string, TaskWorkspaceMetadataRecord>;
+}
+
+interface ContextPacketRuntimeState {
+  loaded: boolean;
+  saveChain: Promise<void>;
+  packetsById: Record<string, ContextPacket>;
+  todoToPacketId: Record<string, string>;
 }
 
 interface GranolaDesktopCacheRecipeEntry {
@@ -1716,6 +1730,10 @@ export class GranolaTaskService {
 
   private readonly workspaceStore: TaskWorkspaceStore;
 
+  private readonly contextPacketStore: ContextPacketStore;
+
+  private readonly docsService?: GranolaDocsService;
+
   private readonly callbackServer: OAuthCallbackServer;
 
   private readonly guardrailMode: 'workspace_only' | 'off' = 'off';
@@ -1852,6 +1870,13 @@ export class GranolaTaskService {
     metadataByTodoId: {},
   };
 
+  private contextPacketState: ContextPacketRuntimeState = {
+    loaded: false,
+    saveChain: Promise.resolve(),
+    packetsById: {},
+    todoToPacketId: {},
+  };
+
   private granolaDesktopChatCatalog: GranolaDesktopChatCatalog | null = null;
 
   private lastFeedBroadcastAt = 0;
@@ -1901,6 +1926,8 @@ export class GranolaTaskService {
     this.chatStore = new TaskChatStore(path.join(options.dataDir, 'task-chat-store.json'));
     this.granolaChatStore = new GranolaChatStore(path.join(options.dataDir, 'granola-chat-store.json'));
     this.workspaceStore = new TaskWorkspaceStore(path.join(options.dataDir, 'task-workspace-store.json'));
+    this.contextPacketStore = new ContextPacketStore(path.join(options.dataDir, 'context-packets-store.json'));
+    this.docsService = options.docsService;
 
     this.callbackServer = new OAuthCallbackServer({
       host: options.callbackHost ?? '127.0.0.1',
@@ -2558,6 +2585,39 @@ export class GranolaTaskService {
     return next;
   }
 
+  private async loadPersistedContextPacketState(): Promise<void> {
+    const persisted = await this.contextPacketStore.load();
+    this.contextPacketState.loaded = true;
+    this.contextPacketState.packetsById = persisted.packetsById ?? {};
+    this.contextPacketState.todoToPacketId = persisted.todoToPacketId ?? {};
+  }
+
+  private async persistContextPacketState(): Promise<void> {
+    if (!this.contextPacketState.loaded) {
+      return;
+    }
+    await this.contextPacketStore.save({
+      version: 1,
+      packetsById: this.contextPacketState.packetsById,
+      todoToPacketId: this.contextPacketState.todoToPacketId,
+    });
+  }
+
+  private async withContextPacketStateWrite<T>(mutator: () => Promise<T>): Promise<T> {
+    const run = async (): Promise<T> => {
+      const output = await mutator();
+      await this.persistContextPacketState();
+      return output;
+    };
+
+    const next = this.contextPacketState.saveChain.then(run, run);
+    this.contextPacketState.saveChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   private queueChatPersist(immediate = false): void {
     const flush = () => {
       void this.withChatStateWrite(async () => undefined);
@@ -2880,6 +2940,274 @@ export class GranolaTaskService {
         });
       }
     });
+  }
+
+  private packetPreview(summary: string, sources: ContextPacketSource[]): ContextPacket['preview'] {
+    const stats: string[] = [];
+    const chatCount = sources.filter((source) => source.kind === 'chat').length;
+    const docCount = sources.filter((source) => source.kind === 'doc').length;
+    const meetingCount = sources.filter((source) => source.kind === 'meeting').length;
+    if (chatCount > 0) {
+      stats.push(`${chatCount} chat source${chatCount === 1 ? '' : 's'}`);
+    }
+    if (docCount > 0) {
+      stats.push(`${docCount} linked doc${docCount === 1 ? '' : 's'}`);
+    }
+    if (meetingCount > 0) {
+      stats.push(`${meetingCount} related meeting${meetingCount === 1 ? '' : 's'}`);
+    }
+    return {
+      summary: clampText(summary, 180),
+      stats,
+      excerpt: clampText(sources.map((source) => source.excerpt).join('\n\n'), 800),
+    };
+  }
+
+  private rememberContextPacket(packet: ContextPacket): void {
+    this.contextPacketState.packetsById[packet.packetId] = packet;
+    this.contextPacketState.todoToPacketId[packet.linkedTodoId] = packet.packetId;
+  }
+
+  private packetForTodoId(todoId: string): ContextPacket | null {
+    const packetId = this.contextPacketState.todoToPacketId[todoId];
+    if (!packetId) {
+      return null;
+    }
+    return this.contextPacketState.packetsById[packetId] ?? null;
+  }
+
+  private buildMeetingPacket(todo: TodoRecord, meeting: GranolaMeeting | null): ContextPacket {
+    const meetingTitle = compactSingleLineText(meeting?.title || todo.meetingTitle || 'Meeting context', 140) || 'Meeting context';
+    const meetingExcerpt = compactMultilineText(
+      [meeting?.notes ?? '', meeting?.enhancedNotes ?? '', meeting?.privateNotes ?? '', meeting?.transcript ?? '', todo.description]
+        .filter(Boolean)
+        .join('\n\n'),
+      1200,
+    ) || todo.description || todo.title;
+    const source: ContextPacketSource = {
+      kind: 'meeting',
+      meetingId: todo.meetingId,
+      meetingTitle,
+      label: meetingTitle,
+      excerpt: meetingExcerpt,
+      citation: `Meeting · ${meetingTitle}`,
+      noteUrl: todo.meetingId ? `https://notes.granola.ai/t/${todo.meetingId}` : null,
+    };
+    const people = Array.from(
+      new Set([compactSingleLineText(todo.owner, 120), ...(meeting?.attendees ?? []).map((value) => compactSingleLineText(value, 120))].filter(Boolean)),
+    ) as string[];
+    const entities = Array.from(new Set([meetingTitle, compactSingleLineText(todo.title, 140)].filter(Boolean))) as string[];
+    return {
+      packetId: randomUUID(),
+      linkedTodoId: todo.todoId,
+      title: compactSingleLineText(todo.title, 180) || meetingTitle,
+      objective: compactMultilineText(todo.description || todo.title, 300) || todo.title,
+      createdAt: nowIso(),
+      origin: 'meeting_extraction',
+      sources: [source],
+      people,
+      entities,
+      citations: [source.citation],
+      preview: this.packetPreview(todo.publicSummary || todo.description || todo.title, [source]),
+      writeback: {
+        chatThreadId: null,
+        docId: null,
+        docTitle: null,
+        docSectionHeading: null,
+      },
+    };
+  }
+
+  private async ensureContextPacketsFromTodos(): Promise<void> {
+    if (!this.contextPacketState.loaded) {
+      return;
+    }
+    await this.withContextPacketStateWrite(async () => {
+      for (const todo of this.todoState.todos) {
+        if (this.packetForTodoId(todo.todoId)) {
+          continue;
+        }
+        const meeting = this.cacheState.meetings.find((item) => item.id === todo.meetingId) ?? null;
+        this.rememberContextPacket(this.buildMeetingPacket(todo, meeting));
+      }
+    });
+  }
+
+  private async ensureContextPacketForTodo(todoId: string): Promise<ContextPacket> {
+    const existing = this.packetForTodoId(todoId);
+    if (existing) {
+      return existing;
+    }
+    const todo = this.findTodo(todoId);
+    if (!todo) {
+      throw new Error(`Task not found: ${todoId}`);
+    }
+    const meeting = this.cacheState.meetings.find((item) => item.id === todo.meetingId) ?? null;
+    const created = this.buildMeetingPacket(todo, meeting);
+    await this.withContextPacketStateWrite(async () => {
+      this.rememberContextPacket(created);
+    });
+    return created;
+  }
+
+  private boundedChatContextMessages(
+    thread: GranolaChatThread,
+    anchorMessageId: string | null,
+    mode: 'message' | 'thread',
+  ): GranolaChatMessage[] {
+    const ordered = [...thread.messages].sort((left, right) => parseDateForSort(left.createdAt) - parseDateForSort(right.createdAt));
+    if (mode === 'thread' || ordered.length === 0) {
+      return ordered.slice(-24);
+    }
+    const anchorIndex = ordered.findIndex((message) => message.messageId === anchorMessageId);
+    if (anchorIndex < 0) {
+      return ordered.slice(-12);
+    }
+    const selected: GranolaChatMessage[] = [ordered[anchorIndex] as GranolaChatMessage];
+    let charBudget = compactMultilineText(ordered[anchorIndex]?.content ?? '', 10_000).length;
+    for (let offset = 1; offset <= 12; offset += 1) {
+      const before = ordered[anchorIndex - offset];
+      if (before) {
+        const nextGap = Math.abs(parseDateForSort(selected[0]?.createdAt ?? null) - parseDateForSort(before.createdAt));
+        if (nextGap <= 20 * 60 * 1000) {
+          const nextText = compactMultilineText(before.content, 10_000);
+          if (charBudget + nextText.length <= 4200) {
+            selected.unshift(before);
+            charBudget += nextText.length;
+          }
+        }
+      }
+      const after = ordered[anchorIndex + offset];
+      if (after) {
+        const nextGap = Math.abs(parseDateForSort(after.createdAt) - parseDateForSort(selected[selected.length - 1]?.createdAt ?? null));
+        if (nextGap <= 20 * 60 * 1000) {
+          const nextText = compactMultilineText(after.content, 10_000);
+          if (charBudget + nextText.length <= 4200) {
+            selected.push(after);
+            charBudget += nextText.length;
+          }
+        }
+      }
+    }
+    return selected;
+  }
+
+  private boundedFallbackChatMessages(
+    messages: Array<{
+      messageId: string;
+      author: string;
+      content: string;
+      createdAt: string;
+    }>,
+    anchorMessageId: string | null,
+    mode: 'message' | 'thread',
+  ): Array<{
+    messageId: string;
+    author: string;
+    content: string;
+    createdAt: string;
+  }> {
+    const ordered = [...messages].sort((left, right) => parseDateForSort(left.createdAt) - parseDateForSort(right.createdAt));
+    if (mode === 'thread' || ordered.length === 0) {
+      return ordered.slice(-24);
+    }
+    const anchorIndex = ordered.findIndex((message) => message.messageId === anchorMessageId);
+    if (anchorIndex < 0) {
+      return ordered.slice(-12);
+    }
+    const selected = [ordered[anchorIndex] as (typeof ordered)[number]];
+    let charBudget = compactMultilineText(ordered[anchorIndex]?.content ?? '', 10_000).length;
+    for (let offset = 1; offset <= 12; offset += 1) {
+      const before = ordered[anchorIndex - offset];
+      if (before) {
+        const nextText = compactMultilineText(before.content, 10_000);
+        if (charBudget + nextText.length <= 4200) {
+          selected.unshift(before);
+          charBudget += nextText.length;
+        }
+      }
+      const after = ordered[anchorIndex + offset];
+      if (after) {
+        const nextText = compactMultilineText(after.content, 10_000);
+        if (charBudget + nextText.length <= 4200) {
+          selected.push(after);
+          charBudget += nextText.length;
+        }
+      }
+    }
+    return selected;
+  }
+
+  private resolveLinkedMeetingSources(spanText: string): ContextPacketSource[] {
+    const linked: ContextPacketSource[] = [];
+    const normalized = spanText.toLowerCase();
+    for (const meeting of this.cacheState.meetings) {
+      if (linked.length >= 2) {
+        break;
+      }
+      const title = compactSingleLineText(meeting.title, 160);
+      if (!title || !normalized.includes(title.toLowerCase())) {
+        continue;
+      }
+      linked.push({
+        kind: 'meeting',
+        meetingId: meeting.id,
+        meetingTitle: title,
+        label: title,
+        excerpt: compactMultilineText([meeting.notes ?? '', meeting.enhancedNotes ?? '', meeting.transcript ?? ''].join('\n\n'), 700) || title,
+        citation: `Meeting · ${title}`,
+        noteUrl: meeting.id ? `https://notes.granola.ai/t/${meeting.id}` : null,
+      });
+    }
+    return linked;
+  }
+
+  private async resolveLinkedDocSources(spanText: string): Promise<ContextPacketSource[]> {
+    if (!this.docsService) {
+      return [];
+    }
+    const linked: ContextPacketSource[] = [];
+    const normalized = spanText.toLowerCase();
+    const docsHome = await this.docsService.docsGetHome();
+    for (const document of docsHome.documents) {
+      if (linked.length >= 2) {
+        break;
+      }
+      if (!normalized.includes(document.title.toLowerCase())) {
+        continue;
+      }
+      linked.push({
+        kind: 'doc',
+        docId: document.docId,
+        docTitle: document.title,
+        blockIds: [],
+        sectionTitle: null,
+        versionId: null,
+        mode: 'section',
+        label: document.title,
+        excerpt: document.preview || document.title,
+        citation: `Doc · ${document.title}`,
+      });
+    }
+    return linked;
+  }
+
+  private latestWritebackContent(todo: TodoRecord, packet: ContextPacket): string {
+    const thread = this.chatState.threads[todo.todoId] ?? [];
+    const assistant = [...thread].reverse().find((message) => message.role === 'assistant' && compactMultilineText(message.content, 10_000));
+    const core = compactMultilineText(
+      assistant?.content || todo.publicSummary || todo.latestPublicStep || todo.description || todo.title,
+      6_000,
+    );
+    const citations = packet.citations.slice(0, 4);
+    return [
+      core,
+      citations.length > 0 ? '' : null,
+      citations.length > 0 ? 'Context sources:' : null,
+      ...citations.map((citation) => `- ${citation}`),
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      .join('\n');
   }
 
   private async withTodoStateWrite<T>(mutator: () => Promise<T>): Promise<T> {
@@ -3462,8 +3790,10 @@ export class GranolaTaskService {
     await this.loadPersistedChatState();
     await this.loadPersistedGranolaChatState();
     await this.loadPersistedWorkspaceState();
+    await this.loadPersistedContextPacketState();
     await this.ensureLegacyGatewayLaunchAgentDisabledOnce();
     await this.ensureThreadsFromTodos();
+    await this.ensureContextPacketsFromTodos();
     await this.recoverInterruptedExecutions();
 
     const stalePendingCleared = this.invalidateStalePendingAuthorization();
@@ -3518,11 +3848,13 @@ export class GranolaTaskService {
       this.chatState.saveChain,
       this.granolaChatState.saveChain,
       this.workspaceState.saveChain,
+      this.contextPacketState.saveChain,
     ]);
     await this.persistTodoState();
     await this.persistChatState();
     await this.persistGranolaChatState();
     await this.persistWorkspaceState();
+    await this.persistContextPacketState();
 
     await this.callbackServer.close();
     this.oauthRedirectUrl = null;
@@ -4222,6 +4554,8 @@ export class GranolaTaskService {
           updatedCount,
         };
       });
+
+      await this.ensureContextPacketsFromTodos();
 
       return {
         ok: true,
@@ -5758,6 +6092,374 @@ export class GranolaTaskService {
 
   async tasksGetWorkspace(): Promise<TasksWorkspace> {
     return this.buildWorkspaceSnapshot();
+  }
+
+  async tasksCreateFromContext(input: TaskCreateFromContextInput): Promise<{ todoId: string; packetId: string }> {
+    const now = nowIso();
+    let sources: ContextPacketSource[] = [];
+    let writeback: TaskWritebackTarget = {
+      chatThreadId: null,
+      docId: null,
+      docTitle: null,
+      docSectionHeading: null,
+    };
+    let title = compactSingleLineText(input.title, 180);
+    let objective = compactMultilineText(input.objective ?? '', 320);
+    let syntheticMeetingId = `context:${randomUUID()}`;
+    let syntheticMeetingTitle = 'Context task';
+
+    if (input.chatSelection) {
+      let thread: GranolaChatThread | null = null;
+      try {
+        thread = this.chatGetThread(input.chatSelection.threadId);
+      } catch {
+        thread = null;
+      }
+      const fallbackMessages = Array.isArray(input.chatSelection.messages)
+        ? input.chatSelection.messages
+            .filter(
+              (message): message is { messageId: string; author: string; content: string; createdAt: string } =>
+                Boolean(message) &&
+                typeof message.messageId === 'string' &&
+                typeof message.author === 'string' &&
+                typeof message.content === 'string' &&
+                typeof message.createdAt === 'string',
+            )
+            .map((message) => ({
+              messageId: compactSingleLineText(message.messageId, 120) || randomUUID(),
+              author: compactSingleLineText(message.author, 120) || 'Unknown',
+              content: compactMultilineText(message.content, 4_000),
+              createdAt: message.createdAt,
+            }))
+            .filter((message) => message.content.length > 0)
+        : [];
+      const anchorMessageId = compactSingleLineText(input.chatSelection.anchorMessageId ?? '', 160) || null;
+      const selectedMessages = thread
+        ? this.boundedChatContextMessages(thread, anchorMessageId, input.chatSelection.mode).map((message) => ({
+            messageId: message.messageId,
+            author: message.role === 'user' ? 'You' : 'Assistant',
+            content: message.content,
+            createdAt: message.createdAt,
+          }))
+        : this.boundedFallbackChatMessages(fallbackMessages, anchorMessageId, input.chatSelection.mode);
+      const excerpt = compactMultilineText(
+        selectedMessages.map((message) => `${message.author}: ${message.content}`).join('\n'),
+        1800,
+      );
+      const anchorMessage =
+        selectedMessages.find((message) => message.messageId === input.chatSelection?.anchorMessageId) ??
+        selectedMessages[selectedMessages.length - 1] ??
+        null;
+      const threadTitle =
+        compactSingleLineText(thread?.title ?? input.chatSelection.threadTitle ?? '', 180) ||
+        'Chat thread';
+      const primarySource: ContextPacketSource = {
+        kind: 'chat',
+        threadId: compactSingleLineText(input.chatSelection.threadId, 180) || randomUUID(),
+        threadTitle,
+        anchorMessageId: anchorMessageId,
+        messageIds: selectedMessages.map((message) => message.messageId),
+        mode: input.chatSelection.mode,
+        label: threadTitle,
+        excerpt: excerpt || compactSingleLineText(anchorMessage?.content, 320) || 'Chat context',
+        citation: `Chat · ${threadTitle}`,
+      };
+      const linkedMeetingSources = this.resolveLinkedMeetingSources(excerpt);
+      const linkedDocSources = await this.resolveLinkedDocSources(excerpt);
+      sources = [primarySource, ...linkedMeetingSources, ...linkedDocSources];
+      writeback.chatThreadId = compactSingleLineText(input.chatSelection.threadId, 180) || null;
+      title ||= compactSingleLineText(anchorMessage?.content || threadTitle, 120) || 'Follow up on chat context';
+      objective ||= compactMultilineText(excerpt, 320) || title;
+      syntheticMeetingId = `chat:${compactSingleLineText(input.chatSelection.threadId, 180) || randomUUID()}`;
+      syntheticMeetingTitle = threadTitle || 'Chat context';
+    }
+
+    if (input.docSelection) {
+      if (!this.docsService) {
+        throw new Error('Docs service is unavailable.');
+      }
+      const document = await this.docsService.docsGetDocument(input.docSelection.docId);
+      const blockIndex = input.docSelection.blockId
+        ? document.blocks.findIndex((block) => block.id === input.docSelection?.blockId)
+        : -1;
+      let startIndex = blockIndex >= 0 ? blockIndex : 0;
+      while (startIndex > 0 && document.blocks[startIndex - 1]?.type !== 'heading') {
+        startIndex -= 1;
+      }
+      let endIndex = Math.min(document.blocks.length, startIndex + 12);
+      for (let index = startIndex + 1; index < document.blocks.length; index += 1) {
+        const block = document.blocks[index];
+        if (block?.type === 'heading') {
+          endIndex = index;
+          break;
+        }
+      }
+      const blocks = document.blocks.slice(startIndex, endIndex);
+      const sectionHeading =
+        blocks
+          .map((block) => (block.type === 'heading' && 'text' in block ? block.text.trim() : ''))
+          .find((value) => value.length > 0) || document.title;
+      const excerpt = compactMultilineText(
+        blocks.map((block) => ('text' in block ? block.text : '---')).join('\n'),
+        1800,
+      );
+      sources.push({
+        kind: 'doc',
+        docId: document.docId,
+        docTitle: document.title,
+        blockIds: blocks.map((block) => block.id),
+        sectionTitle: compactSingleLineText(sectionHeading, 160) || null,
+        versionId: null,
+        mode: input.docSelection.mode,
+        label: document.title,
+        excerpt: excerpt || document.preview,
+        citation: `Doc · ${document.title}`,
+      });
+      writeback.docId = document.docId;
+      writeback.docTitle = document.title;
+      writeback.docSectionHeading = compactSingleLineText(sectionHeading, 160) || 'Task update';
+      title ||= compactSingleLineText(sectionHeading, 160) || document.title;
+      objective ||= compactMultilineText(excerpt, 320) || document.preview || document.title;
+      syntheticMeetingId = `doc:${document.docId}`;
+      syntheticMeetingTitle = document.title;
+    }
+
+    writeback = {
+      ...writeback,
+      chatThreadId:
+        typeof input.writeback?.chatThreadId === 'string' && input.writeback.chatThreadId.trim()
+          ? input.writeback.chatThreadId.trim()
+          : writeback.chatThreadId,
+      docId: typeof input.writeback?.docId === 'string' && input.writeback.docId.trim() ? input.writeback.docId.trim() : writeback.docId,
+      docTitle:
+        typeof input.writeback?.docTitle === 'string' && input.writeback.docTitle.trim()
+          ? input.writeback.docTitle.trim()
+          : writeback.docTitle,
+      docSectionHeading:
+        typeof input.writeback?.docSectionHeading === 'string' && input.writeback.docSectionHeading.trim()
+          ? input.writeback.docSectionHeading.trim()
+          : writeback.docSectionHeading,
+    };
+
+    const safeTitle = title || 'Context task';
+    const safeObjective = objective || safeTitle;
+    const fingerprint = createTodoFingerprint({
+      meetingId: syntheticMeetingId,
+      title: safeTitle,
+      description: safeObjective,
+      dueDate: null,
+      owner: null,
+    });
+    const todoId = randomUUID();
+    const todo: TodoRecord = {
+      todoId,
+      fingerprint,
+      sourceHash: `context-packet:${todoId}`,
+      meetingId: syntheticMeetingId,
+      meetingTitle: syntheticMeetingTitle,
+      title: safeTitle,
+      description: safeObjective,
+      owner: null,
+      dueDate: null,
+      priority: 'medium',
+      evidence: sources.map((source) => `${source.citation}\n${source.excerpt}`).join('\n\n'),
+      status: 'discovered',
+      attempts: 0,
+      createdAt: now,
+      updatedAt: now,
+      approvedAt: null,
+      submittedAt: null,
+      failedAt: null,
+      nextRetryAt: null,
+      publicSummary: '',
+      internalError: null,
+      runId: null,
+      runState: 'idle',
+      latestPublicStep: null,
+      stepEvents: [],
+      guardrail: {
+        mode: this.guardrailMode,
+        verdict: 'unknown',
+        reason: null,
+        checkedAt: null,
+      },
+      openclaw: {
+        lastStatus: null,
+        lastEndpoint: null,
+        lastRunId: null,
+        lastResponseAt: null,
+        lastError: null,
+      },
+    };
+
+    const packet: ContextPacket = {
+      packetId: randomUUID(),
+      linkedTodoId: todoId,
+      title: safeTitle,
+      objective: safeObjective,
+      createdAt: now,
+      origin: input.origin,
+      sources,
+      people: [],
+      entities: Array.from(new Set([safeTitle, ...sources.map((source) => source.label)])),
+      citations: sources.map((source) => source.citation),
+      preview: this.packetPreview(safeObjective, sources),
+      writeback,
+    };
+
+    await this.withTodoStateWrite(async () => {
+      this.todoState.todos.unshift(todo);
+    });
+    await this.withChatStateWrite(async () => {
+      this.appendThreadMessage(todoId, 'system', `Task created from ${input.origin.replace(/_/g, ' ')}.`, {
+        createdAt: now,
+        emitRealtime: false,
+      });
+    });
+    await this.withContextPacketStateWrite(async () => {
+      this.rememberContextPacket(packet);
+    });
+    this.emitFeedUpdated(true);
+    return {
+      todoId,
+      packetId: packet.packetId,
+    };
+  }
+
+  async tasksGetContextPacket(todoId: string): Promise<ContextPacket> {
+    return await this.ensureContextPacketForTodo(todoId);
+  }
+
+  async tasksSetWriteback(todoId: string, patch: Partial<TaskWritebackTarget>): Promise<void> {
+    const packet = await this.ensureContextPacketForTodo(todoId);
+    await this.withContextPacketStateWrite(async () => {
+      const current = this.contextPacketState.packetsById[packet.packetId];
+      if (!current) {
+        return;
+      }
+      this.contextPacketState.packetsById[packet.packetId] = {
+        ...current,
+        writeback: {
+          ...current.writeback,
+          chatThreadId:
+            Object.prototype.hasOwnProperty.call(patch, 'chatThreadId') && typeof patch.chatThreadId === 'string'
+              ? compactSingleLineText(patch.chatThreadId, 120) || null
+              : patch.chatThreadId === null
+                ? null
+                : current.writeback.chatThreadId,
+          docId:
+            Object.prototype.hasOwnProperty.call(patch, 'docId') && typeof patch.docId === 'string'
+              ? compactSingleLineText(patch.docId, 120) || null
+              : patch.docId === null
+                ? null
+                : current.writeback.docId,
+          docTitle:
+            Object.prototype.hasOwnProperty.call(patch, 'docTitle') && typeof patch.docTitle === 'string'
+              ? compactSingleLineText(patch.docTitle, 160) || null
+              : patch.docTitle === null
+                ? null
+                : current.writeback.docTitle,
+          docSectionHeading:
+            Object.prototype.hasOwnProperty.call(patch, 'docSectionHeading') && typeof patch.docSectionHeading === 'string'
+              ? compactSingleLineText(patch.docSectionHeading, 160) || null
+              : patch.docSectionHeading === null
+                ? null
+                : current.writeback.docSectionHeading,
+        },
+      };
+    });
+    this.emitFeedUpdated(true);
+  }
+
+  async tasksWriteBack(
+    todoId: string,
+    target: 'chat' | 'doc' | 'followup',
+  ): Promise<{ ok: boolean; artifactId?: string; message?: string }> {
+    const todo = this.findTodo(todoId);
+    if (!todo) {
+      return {
+        ok: false,
+        message: 'Task not found.',
+      };
+    }
+    const packet = await this.ensureContextPacketForTodo(todoId);
+    if (target === 'followup') {
+      return await this.tasksSendMessage(
+        todoId,
+        'Draft a concise external follow-up based on the current output. Keep it human-ready and do not send anything.',
+      );
+    }
+
+    const content = this.latestWritebackContent(todo, packet);
+    if (!content.trim()) {
+      return {
+        ok: false,
+        message: 'There is no task output to write back yet.',
+      };
+    }
+
+    if (target === 'chat') {
+      const threadId = packet.writeback.chatThreadId;
+      if (!threadId) {
+        return {
+          ok: false,
+          message: 'No chat thread is linked to this task yet.',
+        };
+      }
+      const now = nowIso();
+      const message: GranolaChatMessage = {
+        messageId: randomUUID(),
+        threadId,
+        role: 'assistant',
+        content: `## Task update: ${todo.title}\n\n${content}`,
+        createdAt: now,
+        status: 'completed',
+        thoughtDurationSeconds: null,
+      };
+      await this.withGranolaChatStateWrite(async () => {
+        const current = this.granolaChatState.threads[threadId];
+        if (!current) {
+          throw new Error(`Chat thread not found: ${threadId}`);
+        }
+        this.granolaChatState.threads[threadId] = {
+          ...current,
+          updatedAt: now,
+          messages: [...current.messages, message],
+        };
+      });
+      this.emitFeedUpdated(true);
+      return {
+        ok: true,
+        artifactId: message.messageId,
+      };
+    }
+
+    if (!this.docsService) {
+      return {
+        ok: false,
+        message: 'Docs service is unavailable.',
+      };
+    }
+
+    const result = await this.docsService.docsApplyTaskWriteback({
+      taskTitle: todo.title,
+      docId: packet.writeback.docId,
+      docTitle: packet.writeback.docTitle,
+      docSectionHeading: packet.writeback.docSectionHeading,
+      content,
+      sourceTaskId: todoId,
+      sourcePacketId: packet.packetId,
+    });
+
+    await this.tasksSetWriteback(todoId, {
+      docId: result.document.docId,
+      docTitle: result.document.title,
+    });
+
+    return {
+      ok: true,
+      artifactId: result.version.versionId,
+    };
   }
 
   async tasksUpdateMetadata(todoId: string, patch: TaskMetadataPatch): Promise<TaskWorkspaceItem> {

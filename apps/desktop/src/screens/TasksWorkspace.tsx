@@ -16,11 +16,13 @@ import {
 import { MarkdownMessage } from '../components/MarkdownMessage';
 import type {
   CodexAIStatus,
+  ContextPacket,
   TaskChatMessage,
   TaskPlanningContext,
   TaskSuggestionDeck,
   TaskSuggestionPhase,
   TaskStartOptions,
+  TaskWritebackTarget,
   TaskWorkspaceGroupBy,
   TaskWorkspaceItem,
   TaskWorkspacePrefs,
@@ -46,6 +48,10 @@ type TasksWorkspaceScreenProps = {
   planSuggestionsLoading: boolean;
   nextMoveSuggestions: TaskSuggestionDeck | null;
   nextMoveSuggestionsLoading: boolean;
+  contextPacket: ContextPacket | null;
+  contextPacketLoading: boolean;
+  contextPacketError: string | null;
+  writebackPendingTarget: 'chat' | 'doc' | 'followup' | null;
   executingSuggestionActionId: string | null;
   selectedStartOptions?: TaskStartOptions;
   plannerSelectionValid: boolean;
@@ -90,6 +96,8 @@ type TasksWorkspaceScreenProps = {
   onSummarizeTask: () => void;
   isSummarizingTask: boolean;
   onRunSuggestion: (input: { phase: TaskSuggestionPhase; actionId: string; editedInstruction?: string | null }) => void;
+  onUpdateWriteback: (patch: Partial<TaskWritebackTarget>) => void;
+  onWriteback: (target: 'chat' | 'doc' | 'followup') => void;
 };
 
 function cx(...values: Array<string | false | null | undefined>): string {
@@ -399,6 +407,7 @@ function TaskSuggestionsPanel({
                   <button
                     type="button"
                     className="tasks-suggestion__run"
+                    aria-label={`Run ${action.label}`}
                     disabled={Boolean(pendingActionId)}
                     onClick={() => {
                       onRun({
@@ -546,6 +555,10 @@ export default function TasksWorkspaceScreen({
   planSuggestionsLoading,
   nextMoveSuggestions,
   nextMoveSuggestionsLoading,
+  contextPacket,
+  contextPacketLoading,
+  contextPacketError,
+  writebackPendingTarget,
   executingSuggestionActionId,
   selectedStartOptions,
   plannerSelectionValid,
@@ -582,6 +595,8 @@ export default function TasksWorkspaceScreen({
   onSummarizeTask,
   isSummarizingTask,
   onRunSuggestion,
+  onUpdateWriteback,
+  onWriteback,
 }: TasksWorkspaceScreenProps) {
   const [selectedSectionId, setSelectedSectionId] = useState<TasksWorkspace['sections'][number]['id']>('all');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
@@ -1312,6 +1327,85 @@ export default function TasksWorkspaceScreen({
                           </div>
                         </details>
                       </section>
+
+                      <section className="tasks-detail-card">
+                        <header className="tasks-detail-card__header">
+                          <div>
+                            <h3>Context packet</h3>
+                            <p>Resolved source context and linked outputs for this task.</p>
+                          </div>
+                        </header>
+                        {contextPacketLoading ? <p className="tasks-empty-copy">Loading context packet…</p> : null}
+                        {contextPacketError ? <p className="tasks-empty-copy">{contextPacketError}</p> : null}
+                        {contextPacket ? (
+                          <div className="tasks-context-packet">
+                            <p className="tasks-context-packet__summary">{contextPacket.preview.summary}</p>
+                            <div className="tasks-context-packet__stats">
+                              {contextPacket.preview.stats.map((stat) => (
+                                <span key={stat} className="tasks-chip">
+                                  {stat}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="tasks-context-packet__sources">
+                              {contextPacket.sources.map((source) => (
+                                <article key={`${source.kind}-${source.citation}`} className="tasks-context-packet__source">
+                                  <strong>{source.label}</strong>
+                                  <small>{source.citation}</small>
+                                  <p>{source.excerpt}</p>
+                                </article>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </section>
+
+                      <section className="tasks-detail-card">
+                        <header className="tasks-detail-card__header">
+                          <div>
+                            <h3>Write-back</h3>
+                            <p>Choose where task output should land when you write it back.</p>
+                          </div>
+                        </header>
+                        <div className="tasks-detail-form">
+                          <label className="tasks-field">
+                            <span>Chat thread</span>
+                            <input
+                              value={contextPacket?.writeback.chatThreadId ?? ''}
+                              placeholder="granola chat thread id"
+                              onChange={(event) => {
+                                onUpdateWriteback({
+                                  chatThreadId: event.target.value,
+                                });
+                              }}
+                            />
+                          </label>
+                          <label className="tasks-field">
+                            <span>Target doc</span>
+                            <input
+                              value={contextPacket?.writeback.docTitle ?? ''}
+                              placeholder="Create a new doc on write-back"
+                              onChange={(event) => {
+                                onUpdateWriteback({
+                                  docTitle: event.target.value,
+                                });
+                              }}
+                            />
+                          </label>
+                          <label className="tasks-field">
+                            <span>Doc section</span>
+                            <input
+                              value={contextPacket?.writeback.docSectionHeading ?? ''}
+                              placeholder="Task update"
+                              onChange={(event) => {
+                                onUpdateWriteback({
+                                  docSectionHeading: event.target.value,
+                                });
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </section>
                     </div>
                   ) : null}
 
@@ -1354,6 +1448,46 @@ export default function TasksWorkspaceScreen({
                           onRun={onRunSuggestion}
                         />
                       ) : null}
+                      <section className="tasks-detail-card tasks-detail-card--writeback">
+                        <header className="tasks-detail-card__header">
+                          <div>
+                            <h3>Completion tray</h3>
+                            <p>Post the current output back into the system without leaving Yogurt.</p>
+                          </div>
+                        </header>
+                        <div className="tasks-writeback-tray">
+                          <button
+                            type="button"
+                            className="tasks-soft-button"
+                            disabled={writebackPendingTarget !== null || !contextPacket?.writeback.chatThreadId}
+                            onClick={() => {
+                              onWriteback('chat');
+                            }}
+                          >
+                            {writebackPendingTarget === 'chat' ? 'Posting…' : 'Post to chat'}
+                          </button>
+                          <button
+                            type="button"
+                            className="tasks-soft-button"
+                            disabled={writebackPendingTarget !== null}
+                            onClick={() => {
+                              onWriteback('doc');
+                            }}
+                          >
+                            {writebackPendingTarget === 'doc' ? 'Writing…' : 'Write to doc'}
+                          </button>
+                          <button
+                            type="button"
+                            className="tasks-soft-button"
+                            disabled={writebackPendingTarget !== null}
+                            onClick={() => {
+                              onWriteback('followup');
+                            }}
+                          >
+                            {writebackPendingTarget === 'followup' ? 'Drafting…' : 'Draft follow-up'}
+                          </button>
+                        </div>
+                      </section>
                       <section className="tasks-detail-card tasks-detail-card--timeline">
                         <header className="tasks-detail-card__header">
                           <div>

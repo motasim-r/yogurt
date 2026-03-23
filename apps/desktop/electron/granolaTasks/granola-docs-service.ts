@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { GranolaDocsStore, type DocsWorkspaceState } from './granola-docs-store.js';
+import { GranolaDocsStore, type DocsVersionRecord, type DocsWorkspaceState } from './granola-docs-store.js';
 import type {
+  DocVersionSummary,
   DocsBlock,
   DocsCreateInput,
   DocsDisplayMode,
@@ -21,6 +22,7 @@ interface DocsRuntimeState {
   saveChain: Promise<void>;
   workspace: DocsWorkspaceState;
   documents: Record<string, DocsDocument>;
+  versionsByDocId: Record<string, DocsVersionRecord[]>;
 }
 
 interface SeedDocumentInput {
@@ -249,6 +251,25 @@ function normalizeDocumentShape(document: DocsDocument): DocsDocument {
   };
 }
 
+function snapshotKeyForDocument(document: DocsDocument): string {
+  return JSON.stringify({
+    title: document.title,
+    section: document.section,
+    favorite: document.favorite,
+    shared: document.shared,
+    pinned: document.pinned,
+    iconTone: document.iconTone,
+    blocks: document.blocks,
+  });
+}
+
+function splitIntoParagraphs(value: string): string[] {
+  return value
+    .split(/\n{2,}/)
+    .map((item) => item.replace(/\s+/g, ' ').trim())
+    .filter((item) => item.length > 0);
+}
+
 function normalizeBlockArray(blocks: DocsBlock[]): DocsBlock[] {
   return blocks.map((block) => {
     if (block.type === 'divider') {
@@ -425,6 +446,7 @@ export class GranolaDocsService {
       displayMode: 'list',
     },
     documents: {},
+    versionsByDocId: {},
   };
 
   constructor(dataDir: string) {
@@ -436,6 +458,7 @@ export class GranolaDocsService {
     this.state.loaded = true;
     this.state.workspace = persisted.workspace;
     this.state.documents = Object.keys(persisted.documents).length > 0 ? persisted.documents : buildSeedDocuments();
+    this.state.versionsByDocId = persisted.versionsByDocId ?? {};
 
     if (Object.keys(persisted.documents).length === 0) {
       await this.persist();
@@ -448,9 +471,10 @@ export class GranolaDocsService {
     }
 
     await this.store.save({
-      version: 1,
+      version: 2,
       workspace: this.state.workspace,
       documents: this.state.documents,
+      versionsByDocId: this.state.versionsByDocId,
     });
   }
 
@@ -553,9 +577,55 @@ export class GranolaDocsService {
 
     await this.withWrite(async () => {
       this.state.documents[nextDocument.docId] = nextDocument;
+      this.recordVersion(nextDocument.docId, nextDocument, 'Created document');
     });
 
     return cloneDocument(nextDocument);
+  }
+
+  private recordVersion(
+    docId: string,
+    document: DocsDocument,
+    label: string,
+    options?: {
+      sourceTaskId?: string | null;
+      sourcePacketId?: string | null;
+      restoredFromVersionId?: string | null;
+    },
+  ): DocsVersionRecord {
+    const normalized = normalizeDocumentShape(document);
+    const record: DocsVersionRecord = {
+      versionId: randomUUID(),
+      docId,
+      createdAt: new Date().toISOString(),
+      label,
+      preview: previewFromBlocks(normalized.blocks),
+      sourceTaskId: options?.sourceTaskId ?? null,
+      sourcePacketId: options?.sourcePacketId ?? null,
+      restoredFromVersionId: options?.restoredFromVersionId ?? null,
+      snapshot: cloneDocument(normalized),
+    };
+    const current = this.state.versionsByDocId[docId] ?? [];
+    this.state.versionsByDocId[docId] = [record, ...current].slice(0, 40);
+    return record;
+  }
+
+  private maybeCreateMilestoneVersion(current: DocsDocument, next: DocsDocument): void {
+    const currentKey = snapshotKeyForDocument(current);
+    const nextKey = snapshotKeyForDocument(next);
+    if (currentKey === nextKey) {
+      return;
+    }
+
+    const lastVersion = this.state.versionsByDocId[current.docId]?.[0] ?? null;
+    const lastVersionMs = lastVersion ? Date.parse(lastVersion.createdAt) : 0;
+    const currentUpdatedMs = Date.parse(current.updatedAt);
+    const nextUpdatedMs = Date.parse(next.updatedAt);
+    const ageMs = Number.isFinite(currentUpdatedMs) && Number.isFinite(nextUpdatedMs) ? nextUpdatedMs - currentUpdatedMs : 0;
+
+    if (!lastVersion || ageMs >= 90_000 || lastVersionMs < currentUpdatedMs) {
+      this.recordVersion(current.docId, current, 'Manual milestone');
+    }
   }
 
   async docsUpdate(docId: string, patch: DocsUpdatePatch): Promise<DocsDocument> {
@@ -584,9 +654,123 @@ export class GranolaDocsService {
     });
 
     await this.withWrite(async () => {
+      this.maybeCreateMilestoneVersion(current, nextDocument);
       this.state.documents[docId] = nextDocument;
     });
 
     return cloneDocument(nextDocument);
+  }
+
+  async docsGetHistory(docId: string): Promise<DocVersionSummary[]> {
+    if (!this.state.documents[docId]) {
+      throw new Error(`Document not found: ${docId}`);
+    }
+    return (this.state.versionsByDocId[docId] ?? []).map((version) => ({
+      versionId: version.versionId,
+      docId: version.docId,
+      createdAt: version.createdAt,
+      label: version.label,
+      sourceTaskId: version.sourceTaskId ?? null,
+      sourcePacketId: version.sourcePacketId ?? null,
+      restoredFromVersionId: version.restoredFromVersionId ?? null,
+      preview: version.preview,
+    }));
+  }
+
+  async docsRestoreVersion(docId: string, versionId: string): Promise<DocsDocument> {
+    const current = this.state.documents[docId];
+    if (!current) {
+      throw new Error(`Document not found: ${docId}`);
+    }
+    const version = (this.state.versionsByDocId[docId] ?? []).find((item) => item.versionId === versionId);
+    if (!version) {
+      throw new Error(`Version not found: ${versionId}`);
+    }
+
+    const restored = normalizeDocumentShape({
+      ...cloneDocument(version.snapshot),
+      updatedAt: new Date().toISOString(),
+    });
+
+    await this.withWrite(async () => {
+      this.recordVersion(docId, current, 'Restore point');
+      this.state.documents[docId] = restored;
+      this.recordVersion(docId, restored, `Restored ${version.label}`, {
+        restoredFromVersionId: version.versionId,
+      });
+    });
+
+    return cloneDocument(restored);
+  }
+
+  async docsApplyTaskWriteback(input: {
+    taskTitle: string;
+    docId?: string | null;
+    docTitle?: string | null;
+    docSectionHeading?: string | null;
+    content: string;
+    sourceTaskId: string;
+    sourcePacketId: string;
+  }): Promise<{ document: DocsDocument; version: DocVersionSummary }> {
+    const targetDocId = input.docId && this.state.documents[input.docId] ? input.docId : null;
+    const current = targetDocId
+      ? this.state.documents[targetDocId]
+      : normalizeDocumentShape({
+          docId: randomUUID(),
+          title: input.docTitle?.trim() || `${input.taskTitle} update`,
+          section: 'drive',
+          locationLabel: locationLabelForSection('drive'),
+          ownerLabel: DOCS_OWNER,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          recentLabel: '',
+          preview: '',
+          favorite: false,
+          shared: false,
+          pinned: false,
+          iconTone: 'blue',
+          breadcrumbs: breadcrumbsForSection('drive'),
+          blocks: [createBlock('heading', input.docSectionHeading?.trim() || 'Task update')],
+        });
+
+    const paragraphs = splitIntoParagraphs(input.content);
+    const sectionHeading = input.docSectionHeading?.trim() || 'Task update';
+    const nextBlocks = [
+      ...cloneBlocks(current.blocks),
+      createBlock('divider'),
+      createBlock('heading', sectionHeading),
+      ...paragraphs.map((paragraph) => createBlock('paragraph', paragraph)),
+    ];
+    const nextDocument = normalizeDocumentShape({
+      ...current,
+      title: current.title || input.docTitle?.trim() || `${input.taskTitle} update`,
+      updatedAt: new Date().toISOString(),
+      blocks: nextBlocks,
+    });
+
+    let versionSummary: DocVersionSummary;
+    await this.withWrite(async () => {
+      this.recordVersion(current.docId, current, 'Pre write-back checkpoint');
+      this.state.documents[nextDocument.docId] = nextDocument;
+      const version = this.recordVersion(nextDocument.docId, nextDocument, `Task update · ${input.taskTitle}`, {
+        sourceTaskId: input.sourceTaskId,
+        sourcePacketId: input.sourcePacketId,
+      });
+      versionSummary = {
+        versionId: version.versionId,
+        docId: version.docId,
+        createdAt: version.createdAt,
+        label: version.label,
+        sourceTaskId: version.sourceTaskId,
+        sourcePacketId: version.sourcePacketId,
+        restoredFromVersionId: version.restoredFromVersionId,
+        preview: version.preview,
+      };
+    });
+
+    return {
+      document: cloneDocument(nextDocument),
+      version: versionSummary!,
+    };
   }
 }

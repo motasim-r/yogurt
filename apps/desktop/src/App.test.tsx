@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   CodexAIStatus,
+  ContextPacket,
+  DocVersionSummary,
   DocsDocument,
   DocsHome,
   GranolaChatRecipe,
@@ -20,18 +22,19 @@ import type {
 
 const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
 
-const {
-  state,
-  makeFeed,
-  makeHomeFeed,
-  makeHomeNoteDetail,
-  makeChatRecipes,
-  makeChatThread,
-  makeDocsDocument,
-  makeWorkspace,
-  makeThread,
-  makePlanningContext,
-  granolaClientMock,
+  const {
+    state,
+    makeFeed,
+    makeHomeFeed,
+    makeHomeNoteDetail,
+    makeChatRecipes,
+    makeChatThread,
+    makeContextPacket,
+    makeDocsDocument,
+    makeWorkspace,
+    makeThread,
+    makePlanningContext,
+    granolaClientMock,
 } = vi.hoisted(() => {
   const makeFeed = (): TasksFeed => ({
     connectionState: 'connected',
@@ -536,6 +539,48 @@ const {
     ],
   });
 
+  const makeContextPacket = (
+    todoId: string,
+    overrides: Partial<ContextPacket> = {},
+  ): ContextPacket => ({
+    packetId: overrides.packetId ?? `packet-${todoId}`,
+    linkedTodoId: todoId,
+    title: overrides.title ?? (state.feed.todos.find((todo) => todo.todoId === todoId)?.title ?? 'Context task'),
+    objective:
+      overrides.objective ??
+      (state.feed.todos.find((todo) => todo.todoId === todoId)?.description ?? 'Create a task from linked context.'),
+    createdAt: overrides.createdAt ?? '2026-03-22T18:00:00.000Z',
+    origin: overrides.origin ?? 'meeting_extraction',
+    sources:
+      overrides.sources ??
+      [
+        {
+          kind: 'meeting',
+          meetingId: state.feed.todos.find((todo) => todo.todoId === todoId)?.meetingId ?? 'meeting-1',
+          meetingTitle: state.feed.todos.find((todo) => todo.todoId === todoId)?.meetingTitle ?? 'Weekly GTM review',
+          label: state.feed.todos.find((todo) => todo.todoId === todoId)?.meetingTitle ?? 'Weekly GTM review',
+          excerpt: state.feed.todos.find((todo) => todo.todoId === todoId)?.description ?? 'Meeting-backed context',
+          citation: `Meeting · ${state.feed.todos.find((todo) => todo.todoId === todoId)?.meetingTitle ?? 'Weekly GTM review'}`,
+        },
+      ],
+    people: overrides.people ?? [],
+    entities: overrides.entities ?? [state.feed.todos.find((todo) => todo.todoId === todoId)?.title ?? 'Task'],
+    citations: overrides.citations ?? [],
+    preview:
+      overrides.preview ?? {
+        summary: 'Resolved context packet preview.',
+        stats: ['Using 1 source'],
+        excerpt: state.feed.todos.find((todo) => todo.todoId === todoId)?.description ?? 'Meeting-backed context',
+      },
+    writeback:
+      overrides.writeback ?? {
+        chatThreadId: 'chat-1',
+        docId: 'doc-1',
+        docTitle: 'Campaign Plan',
+        docSectionHeading: 'Task update',
+      },
+  });
+
   const state = {
     feed: makeFeed(),
     workspace: null as TasksWorkspace | null,
@@ -568,6 +613,9 @@ const {
       ['doc-2', makeDocsDocument('doc-2', 'VectorHaul Launch Narrative', 'wiki', { shared: true, pinned: true, ownerLabel: 'Laura Bennett', iconTone: 'violet', recentLabel: '13:42 Today' })],
       ['doc-3', makeDocsDocument('doc-3', 'Weekly Brief March 21', 'drive', { shared: true, iconTone: 'amber', recentLabel: '12:11 Today' })],
     ]),
+    contextPackets: new Map<string, ContextPacket>(),
+    docHistories: new Map<string, DocVersionSummary[]>(),
+    docVersionSnapshots: new Map<string, DocsDocument>(),
     aiStatus: {
       profile: 'ironclaw',
       state: 'connected',
@@ -584,6 +632,23 @@ const {
     } as CodexAIStatus,
   };
   state.workspace = makeWorkspace(state.feed);
+  state.contextPackets.set('todo-1', makeContextPacket('todo-1'));
+  state.contextPackets.set(
+    'todo-2',
+    makeContextPacket('todo-2', {
+      preview: {
+        summary: 'Context packet pulled from prospecting strategy.',
+        stats: ['Using 1 source', 'Ready for write-back'],
+        excerpt: 'Prioritize high-intent targets and capture next actions.',
+      },
+      writeback: {
+        chatThreadId: 'chat-2',
+        docId: 'doc-3',
+        docTitle: 'Weekly Brief March 21',
+        docSectionHeading: 'Task update',
+      },
+    }),
+  );
 
   const granolaClientMock = {
     getAppInfo: vi.fn(async () => ({ version: '0.1.0-test', platform: 'test' })),
@@ -743,8 +808,243 @@ const {
       state.docsDocuments.set(docId, updated);
       return JSON.parse(JSON.stringify(updated));
     }),
+    docsGetHistory: vi.fn(async (docId: string) => JSON.parse(JSON.stringify(state.docHistories.get(docId) ?? []))),
+    docsRestoreVersion: vi.fn(async (docId: string, versionId: string) => {
+      const snapshot = state.docVersionSnapshots.get(versionId);
+      if (!snapshot) {
+        throw new Error(`missing docs snapshot for ${versionId}`);
+      }
+      state.docsDocuments.set(docId, JSON.parse(JSON.stringify(snapshot)));
+      const restoredVersion: DocVersionSummary = {
+        versionId: `version-${Date.now()}`,
+        docId,
+        createdAt: new Date().toISOString(),
+        label: 'Restored version',
+        restoredFromVersionId: versionId,
+        preview: snapshot.preview,
+      };
+      state.docHistories.set(docId, [...(state.docHistories.get(docId) ?? []), restoredVersion]);
+      return JSON.parse(JSON.stringify(snapshot));
+    }),
     tasksGetFeed: vi.fn(async () => JSON.parse(JSON.stringify(state.feed))),
     tasksGetWorkspace: vi.fn(async () => JSON.parse(JSON.stringify(state.workspace))),
+    tasksCreateFromContext: vi.fn(async (input: {
+      title?: string | null;
+      objective?: string | null;
+      origin: 'chat_selection' | 'doc_selection' | 'mixed';
+      chatSelection?: {
+        threadId: string;
+        threadTitle?: string | null;
+        anchorMessageId?: string | null;
+        mode: 'message' | 'thread';
+        messages?: Array<{ messageId: string; author: string; content: string; createdAt: string }>;
+      };
+      docSelection?: {
+        docId: string;
+        blockId?: string | null;
+        mode: 'block' | 'section' | 'checklist';
+      };
+      writeback?: {
+        chatThreadId?: string | null;
+        docId?: string | null;
+        docTitle?: string | null;
+        docSectionHeading?: string | null;
+      };
+    }) => {
+      const todoId = `todo-context-${Date.now()}`;
+      const packetId = `packet-${todoId}`;
+      const createdAt = new Date().toISOString();
+      const title = input.title?.trim() || 'Context task';
+      const objective = input.objective?.trim() || title;
+      const sourceMeetingTitle =
+        input.docSelection?.docId
+          ? state.docsDocuments.get(input.docSelection.docId)?.title ?? 'Document context'
+          : input.chatSelection?.threadTitle ?? 'Chat context';
+      const nextTodo = {
+        todoId,
+        meetingId: `context-${todoId}`,
+        meetingTitle: sourceMeetingTitle,
+        title,
+        description: objective,
+        owner: null,
+        dueDate: null,
+        priority: 'medium' as const,
+        status: 'discovered' as const,
+        attempts: 0,
+        lastUpdatedAt: createdAt,
+        publicSummary: '',
+        latestPublicStep: '',
+        stepCount: 0,
+        steps: [],
+        runState: 'idle' as const,
+        runQueueState: 'idle' as const,
+        runId: null,
+      };
+      state.feed = {
+        ...state.feed,
+        todos: [nextTodo, ...state.feed.todos],
+        counts: {
+          ...state.feed.counts,
+          discovered: state.feed.counts.discovered + 1,
+        },
+        selectedTodoIdHint: todoId,
+      };
+      state.workspace = makeWorkspace(state.feed);
+      const packet = makeContextPacket(todoId, {
+        packetId,
+        title,
+        objective,
+        origin: input.origin,
+        sources: input.chatSelection
+          ? [
+              {
+                kind: 'chat',
+                threadId: input.chatSelection.threadId,
+                threadTitle: input.chatSelection.threadTitle ?? 'Chat thread',
+                anchorMessageId: input.chatSelection.anchorMessageId ?? null,
+                messageIds: input.chatSelection.messages?.map((message) => message.messageId) ?? [],
+                mode: input.chatSelection.mode,
+                label: input.chatSelection.threadTitle ?? 'Chat thread',
+                excerpt: input.chatSelection.messages?.map((message) => `${message.author}: ${message.content}`).join('\n') ?? objective,
+                citation: `Chat · ${input.chatSelection.threadTitle ?? 'Chat thread'}`,
+              },
+            ]
+          : input.docSelection
+            ? [
+                {
+                  kind: 'doc',
+                  docId: input.docSelection.docId,
+                  docTitle: state.docsDocuments.get(input.docSelection.docId)?.title ?? 'Document',
+                  blockIds: input.docSelection.blockId ? [input.docSelection.blockId] : [],
+                  sectionTitle: state.docsDocuments.get(input.docSelection.docId)?.title ?? 'Document',
+                  versionId: null,
+                  mode: input.docSelection.mode,
+                  label: state.docsDocuments.get(input.docSelection.docId)?.title ?? 'Document',
+                  excerpt: objective,
+                  citation: `Doc · ${state.docsDocuments.get(input.docSelection.docId)?.title ?? 'Document'}`,
+                },
+              ]
+            : undefined,
+        preview: {
+          summary: objective,
+          stats: input.chatSelection
+            ? [`Using ${input.chatSelection.messages?.length ?? 0} messages`]
+            : input.docSelection
+              ? ['Using 1 doc section']
+              : ['Using 1 source'],
+          excerpt: objective,
+        },
+        writeback: {
+          chatThreadId: input.writeback?.chatThreadId ?? input.chatSelection?.threadId ?? null,
+          docId: input.writeback?.docId ?? input.docSelection?.docId ?? null,
+          docTitle:
+            input.writeback?.docTitle ??
+            (input.docSelection?.docId ? state.docsDocuments.get(input.docSelection.docId)?.title ?? null : null),
+          docSectionHeading: input.writeback?.docSectionHeading ?? 'Task update',
+        },
+      });
+      state.contextPackets.set(todoId, packet);
+      return { todoId, packetId };
+    }),
+    tasksGetContextPacket: vi.fn(async (todoId: string) => {
+      const packet = state.contextPackets.get(todoId);
+      if (!packet) {
+        throw new Error(`missing context packet for ${todoId}`);
+      }
+      return JSON.parse(JSON.stringify(packet));
+    }),
+    tasksSetWriteback: vi.fn(async (todoId: string, patch: { chatThreadId?: string | null; docId?: string | null; docTitle?: string | null; docSectionHeading?: string | null }) => {
+      const current = state.contextPackets.get(todoId);
+      if (!current) {
+        throw new Error(`missing context packet for ${todoId}`);
+      }
+      state.contextPackets.set(todoId, {
+        ...current,
+        writeback: {
+          ...current.writeback,
+          ...patch,
+        },
+      });
+    }),
+    tasksWriteBack: vi.fn(async (todoId: string, target: 'chat' | 'doc' | 'followup') => {
+      const packet = state.contextPackets.get(todoId);
+      const todo = state.feed.todos.find((item) => item.todoId === todoId);
+      if (!packet || !todo) {
+        return { ok: false, message: 'missing context packet' };
+      }
+      if (target === 'followup') {
+        const next = [...(state.threads.get(todoId) ?? [])];
+        next.push({
+          messageId: `followup-${next.length + 1}`,
+          todoId,
+          runId: null,
+          role: 'assistant',
+          content: `Draft external follow-up for ${todo.title}.`,
+          createdAt: new Date().toISOString(),
+          streaming: false,
+          statusTag: 'completed',
+        });
+        state.threads.set(todoId, next);
+        return { ok: true, artifactId: `followup-${todoId}` };
+      }
+      if (target === 'chat' && packet.writeback.chatThreadId?.startsWith('chat-')) {
+        const thread = state.chatThreads.get(packet.writeback.chatThreadId);
+        if (!thread) {
+          return { ok: false, message: 'missing chat thread' };
+        }
+        const createdAt = new Date().toISOString();
+        thread.messages.push({
+          messageId: `${thread.threadId}-assistant-${Date.now()}`,
+          threadId: thread.threadId,
+          role: 'assistant',
+          content: `## Task update: ${todo.title}\n\n${todo.publicSummary || todo.description}`,
+          createdAt,
+          status: 'completed',
+          thoughtDurationSeconds: null,
+        });
+        thread.updatedAt = createdAt;
+        state.chatThreads.set(thread.threadId, thread);
+        return { ok: true, artifactId: `${thread.threadId}-writeback` };
+      }
+      if (target === 'doc') {
+        const docId = packet.writeback.docId ?? `doc-${Date.now()}`;
+        const current = state.docsDocuments.get(docId) ?? makeDocsDocument(docId, packet.writeback.docTitle ?? 'Task output', 'home');
+        const versionId = `version-${Date.now()}`;
+        state.docVersionSnapshots.set(versionId, JSON.parse(JSON.stringify(current)));
+        const historyEntry: DocVersionSummary = {
+          versionId,
+          docId,
+          createdAt: new Date().toISOString(),
+          label: `Task update · ${todo.title}`,
+          sourceTaskId: todoId,
+          sourcePacketId: packet.packetId,
+          preview: todo.publicSummary || todo.description,
+        };
+        state.docHistories.set(docId, [...(state.docHistories.get(docId) ?? []), historyEntry]);
+        const nextDocument: DocsDocument = {
+          ...current,
+          updatedAt: new Date().toISOString(),
+          preview: todo.publicSummary || todo.description,
+          blocks: [
+            ...current.blocks,
+            { id: `${docId}-divider-${Date.now()}`, type: 'divider' },
+            { id: `${docId}-heading-${Date.now()}`, type: 'heading', text: packet.writeback.docSectionHeading ?? 'Task update' },
+            { id: `${docId}-paragraph-${Date.now()}`, type: 'paragraph', text: todo.publicSummary || todo.description },
+          ],
+        };
+        state.docsDocuments.set(docId, nextDocument);
+        state.contextPackets.set(todoId, {
+          ...packet,
+          writeback: {
+            ...packet.writeback,
+            docId,
+            docTitle: nextDocument.title,
+          },
+        });
+        return { ok: true, artifactId: versionId };
+      }
+      return { ok: true, artifactId: `${target}-${todoId}` };
+    }),
     tasksUpdateMetadata: vi.fn(async (todoId: string, patch: { assigneeId?: string | null; listId?: string; boardColumnId?: string; following?: boolean; latestBrief?: { content: string; generatedAt: string; modelLabel: string } | null }) => {
       const current = state.workspace?.items.find((item) => item.todoId === todoId);
       if (!current || !state.workspace) {
@@ -984,6 +1284,7 @@ const {
     makeHomeNoteDetail,
     makeChatRecipes,
     makeChatThread,
+    makeContextPacket,
     makeDocsDocument,
     makeDocsHome,
     makeWorkspace,
@@ -1076,6 +1377,8 @@ describe('App task copilot', () => {
       ['todo-2', makePlanningContext('todo-2')],
     ]);
     state.latestPlans = new Map<string, TaskPlanDraft>();
+    state.planSuggestionDecks = new Map<string, TaskSuggestionDeck>();
+    state.nextMoveSuggestionDecks = new Map<string, TaskSuggestionDeck>();
     state.homeDetails = new Map<string, HomeNoteDetail>([
       ['meeting-1', makeHomeNoteDetail('meeting-1')],
       ['meeting-2', makeHomeNoteDetail('meeting-2')],
@@ -1092,6 +1395,27 @@ describe('App task copilot', () => {
       ['doc-2', makeDocsDocument('doc-2', 'VectorHaul Launch Narrative', 'wiki', { shared: true, pinned: true, ownerLabel: 'Laura Bennett', iconTone: 'violet', recentLabel: '13:42 Today' })],
       ['doc-3', makeDocsDocument('doc-3', 'Weekly Brief March 21', 'drive', { shared: true, iconTone: 'amber', recentLabel: '12:11 Today' })],
     ]);
+    state.contextPackets = new Map<string, ContextPacket>([
+      ['todo-1', makeContextPacket('todo-1')],
+      [
+        'todo-2',
+        makeContextPacket('todo-2', {
+          preview: {
+            summary: 'Context packet pulled from prospecting strategy.',
+            stats: ['Using 1 source', 'Ready for write-back'],
+            excerpt: 'Prioritize high-intent targets and capture next actions.',
+          },
+          writeback: {
+            chatThreadId: 'chat-2',
+            docId: 'doc-3',
+            docTitle: 'Weekly Brief March 21',
+            docSectionHeading: 'Task update',
+          },
+        }),
+      ],
+    ]);
+    state.docHistories = new Map<string, DocVersionSummary[]>();
+    state.docVersionSnapshots = new Map<string, DocsDocument>();
     state.aiStatus = {
       profile: 'ironclaw',
       state: 'connected',
@@ -1252,6 +1576,42 @@ describe('App task copilot', () => {
     expect(screen.getByText(/Pinned launch sequence/i)).toBeInTheDocument();
   });
 
+  it('creates a task from a seeded team-thread message with bounded chat context', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Chat' }));
+    await user.click(await screen.findByRole('button', { name: /#launch-war-room/i }));
+    await screen.findByRole('region', { name: /Team thread #launch-war-room/i });
+
+    await user.click(screen.getAllByRole('button', { name: /Create task from Laura's message/i })[0] as HTMLButtonElement);
+    const createTaskDialog = await screen.findByRole('dialog', { name: /Create task from team thread/i });
+    expect(createTaskDialog).toBeInTheDocument();
+    await user.click(within(createTaskDialog).getByRole('button', { name: /^Create task$/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksCreateFromContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          origin: 'chat_selection',
+          chatSelection: expect.objectContaining({
+            threadId: 'team-thread:team-channel-launch-war-room',
+            threadTitle: '#launch-war-room',
+            mode: 'message',
+            messages: expect.arrayContaining([
+              expect.objectContaining({
+                author: 'Laura',
+              }),
+            ]),
+          }),
+          writeback: {
+            chatThreadId: 'team-thread:team-channel-launch-war-room',
+          },
+        }),
+      );
+    });
+    expect(await screen.findByRole('heading', { name: 'Tasks' })).toBeInTheDocument();
+  });
+
   it('filters the nested messenger list with a controlled empty state', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -1294,6 +1654,51 @@ describe('App task copilot', () => {
 
     expect((await screen.findAllByText(/Please ship the final deck tonight/i)).length).toBeGreaterThan(0);
   }, 10000);
+
+  it('posts task write-back into the linked team discussion without using the backend chat write-back path', async () => {
+    const user = userEvent.setup();
+    state.contextPackets.set(
+      'todo-2',
+      makeContextPacket('todo-2', {
+        origin: 'chat_selection',
+        sources: [
+          {
+            kind: 'chat',
+            threadId: 'team-thread:team-channel-launch-war-room',
+            threadTitle: '#launch-war-room',
+            anchorMessageId: 'launch-5',
+            messageIds: ['launch-1', 'launch-2', 'launch-3', 'launch-4', 'launch-5'],
+            mode: 'thread',
+            label: '#launch-war-room',
+            excerpt: 'Laura asked for the final deck once the narrative is locked.',
+            citation: 'Chat · #launch-war-room',
+          },
+        ],
+        preview: {
+          summary: 'Launch-room chat context connected to this task.',
+          stats: ['Using 5 messages'],
+          excerpt: 'Laura asked for the final deck once the narrative is locked.',
+        },
+        writeback: {
+          chatThreadId: 'team-thread:team-channel-launch-war-room',
+          docId: null,
+          docTitle: null,
+          docSectionHeading: null,
+        },
+      }),
+    );
+
+    render(<App />);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
+
+    await user.click(screen.getByRole('button', { name: /Post to chat/i }));
+
+    expect(granolaClientMock.tasksWriteBack).not.toHaveBeenCalledWith('todo-2', 'chat');
+
+    await user.click(screen.getByRole('button', { name: 'Chat' }));
+    await user.click(await screen.findByRole('button', { name: /#launch-war-room/i }));
+    expect(await screen.findByText(/Task update: Build outreach lead list/i)).toBeInTheDocument();
+  });
 
   it('sends a freeform chat prompt and opens the resulting thread', async () => {
     const user = userEvent.setup();
@@ -1531,9 +1936,9 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
 
-    const draftArticle = screen.getByText('Draft follow-up').closest('article');
+    const draftArticle = screen.getByText('Draft follow-up', { selector: 'strong' }).closest('article');
     expect(draftArticle).toBeTruthy();
-    await user.click(within(draftArticle as HTMLElement).getByRole('button', { name: /Turn the findings into a concise follow-up message/i }));
+    await user.click(within(draftArticle as HTMLElement).getByRole('button', { name: /Run Draft follow-up/i }));
 
     await waitFor(() => {
       expect(granolaClientMock.tasksExecuteSuggestion).toHaveBeenCalledWith(
@@ -1606,11 +2011,11 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user);
 
-    const fastPathArticle = screen.getByText('Fast path execution').closest('article');
+    const fastPathArticle = screen.getByText('Fast path execution', { selector: 'strong' }).closest('article');
     expect(fastPathArticle).toBeTruthy();
     await user.click(
       within(fastPathArticle as HTMLElement).getByRole('button', {
-        name: /Run a focused pass to generate quick, actionable output/i,
+        name: /Run Fast path execution/i,
       }),
     );
 
