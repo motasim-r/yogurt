@@ -842,6 +842,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
       docSelection?: {
         docId: string;
         blockId?: string | null;
+        blockIds?: string[];
         mode: 'block' | 'section' | 'checklist';
       };
       writeback?: {
@@ -915,7 +916,12 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
                   kind: 'doc',
                   docId: input.docSelection.docId,
                   docTitle: state.docsDocuments.get(input.docSelection.docId)?.title ?? 'Document',
-                  blockIds: input.docSelection.blockId ? [input.docSelection.blockId] : [],
+                  blockIds:
+                    input.docSelection.blockIds && input.docSelection.blockIds.length > 0
+                      ? input.docSelection.blockIds
+                      : input.docSelection.blockId
+                        ? [input.docSelection.blockId]
+                        : [],
                   sectionTitle: state.docsDocuments.get(input.docSelection.docId)?.title ?? 'Document',
                   versionId: null,
                   mode: input.docSelection.mode,
@@ -930,7 +936,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
           stats: input.chatSelection
             ? [`Using ${input.chatSelection.messages?.length ?? 0} messages`]
             : input.docSelection
-              ? ['Using 1 doc section']
+              ? [`Using ${input.docSelection.blockIds?.length ?? (input.docSelection.blockId ? 1 : 1)} doc block${(input.docSelection.blockIds?.length ?? (input.docSelection.blockId ? 1 : 1)) === 1 ? '' : 's'}`]
               : ['Using 1 source'],
           excerpt: objective,
         },
@@ -987,8 +993,19 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
         state.threads.set(todoId, next);
         return { ok: true, artifactId: `followup-${todoId}` };
       }
-      if (target === 'chat' && packet.writeback.chatThreadId?.startsWith('chat-')) {
-        const thread = state.chatThreads.get(packet.writeback.chatThreadId);
+      if (target === 'chat') {
+        const threadId = packet.writeback.chatThreadId?.startsWith('chat-')
+          ? packet.writeback.chatThreadId
+          : `chat-${Date.now()}`;
+        const thread =
+          state.chatThreads.get(threadId) ??
+          {
+            threadId,
+            title: `Task update · ${todo.title}`,
+            scope: 'all_meetings' as const,
+            updatedAt: new Date().toISOString(),
+            messages: [],
+          };
         if (!thread) {
           return { ok: false, message: 'missing chat thread' };
         }
@@ -1004,7 +1021,14 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
         });
         thread.updatedAt = createdAt;
         state.chatThreads.set(thread.threadId, thread);
-        return { ok: true, artifactId: `${thread.threadId}-writeback` };
+        state.contextPackets.set(todoId, {
+          ...packet,
+          writeback: {
+            ...packet.writeback,
+            chatThreadId: thread.threadId,
+          },
+        });
+        return { ok: true, artifactId: `${thread.threadId}-writeback`, chatThreadId: thread.threadId };
       }
       if (target === 'doc') {
         const docId = packet.writeback.docId ?? `doc-${Date.now()}`;
@@ -1041,7 +1065,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
             docTitle: nextDocument.title,
           },
         });
-        return { ok: true, artifactId: versionId };
+        return { ok: true, artifactId: versionId, docId, docTitle: nextDocument.title };
       }
       return { ok: true, artifactId: `${target}-${todoId}` };
     }),
@@ -1700,6 +1724,50 @@ describe('App task copilot', () => {
     expect(await screen.findByText(/Task update: Build outreach lead list/i)).toBeInTheDocument();
   });
 
+  it('creates a linked chat thread when posting task write-back without an existing chat target', async () => {
+    const user = userEvent.setup();
+    state.contextPackets.set(
+      'todo-2',
+      makeContextPacket('todo-2', {
+        writeback: {
+          chatThreadId: null,
+          docId: 'doc-1',
+          docTitle: 'Campaign Plan',
+          docSectionHeading: 'Task update',
+        },
+      }),
+    );
+
+    render(<App />);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
+
+    const postButton = screen.getByRole('button', { name: /Post to chat/i });
+    expect(postButton).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /^Draft follow-up$/i })).not.toBeInTheDocument();
+
+    await user.click(postButton);
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksWriteBack).toHaveBeenCalledWith('todo-2', 'chat');
+    });
+    expect(await screen.findByRole('heading', { name: 'Chats' })).toBeInTheDocument();
+    expect(await screen.findByText(/Task update: Build outreach lead list/i)).toBeInTheDocument();
+  });
+
+  it('writes task output to docs and opens the linked document', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
+
+    await user.click(screen.getByRole('button', { name: /Write to doc/i }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksWriteBack).toHaveBeenCalledWith('todo-2', 'doc');
+    });
+    expect(await screen.findByRole('button', { name: 'Version history' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Run page as task' })).toBeInTheDocument();
+  });
+
   it('sends a freeform chat prompt and opens the resulting thread', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -1861,6 +1929,43 @@ describe('App task copilot', () => {
     expect(await screen.findByDisplayValue('Launch Storyline')).toBeInTheDocument();
     expect(screen.getByDisplayValue('Launch narrative')).toBeInTheDocument();
     expect(screen.getByDisplayValue('Share the revised story')).toBeInTheDocument();
+  });
+
+  it('runs the current docs page as a task from the top toolbar', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Docs' }));
+    await user.click(await screen.findByRole('button', { name: 'Campaign Plan' }));
+    await user.click(await screen.findByRole('button', { name: 'Run page as task' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Run doc context as task' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create task' }));
+
+    await waitFor(() => {
+      expect(granolaClientMock.tasksCreateFromContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          origin: 'doc_selection',
+          docSelection: expect.objectContaining({
+            docId: 'doc-1',
+            mode: 'section',
+            blockIds: ['doc-1-heading', 'doc-1-p1'],
+          }),
+        }),
+      );
+    });
+  });
+
+  it('opens docs version history as a right-side sheet', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Docs' }));
+    await user.click(await screen.findByRole('button', { name: 'Campaign Plan' }));
+    await user.click(await screen.findByRole('button', { name: 'Version history' }));
+
+    expect(await screen.findByLabelText('Version history')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Close version history' }).length).toBeGreaterThan(0);
   });
 
   it('starts a selected task from the list', async () => {

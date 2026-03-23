@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { LinkIcon, SparkleIcon } from '../design-system/icons';
+import { Button } from '../design-system/primitives';
 import type { CodexAIStatus } from '../shared/types';
 
 type AISettingsScreenProps = {
@@ -55,12 +56,12 @@ export default function AISettingsScreen({
               <p>Use one Codex CLI login across task briefs, doc rewrites, chat summaries, and future Yogurt AI actions.</p>
             </div>
             <div className="ai-settings-header__actions">
-              <button type="button" className="tasks-primary-button" onClick={onConnect} disabled={isConnecting}>
+              <Button variant="primary" onClick={onConnect} disabled={isConnecting}>
                 {isConnecting ? 'Opening Terminal...' : 'Reconnect Codex'}
-              </button>
-              <button type="button" className="tasks-soft-button" onClick={onDisconnect} disabled={isDisconnecting}>
+              </Button>
+              <Button onClick={onDisconnect} disabled={isDisconnecting}>
                 {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
-              </button>
+              </Button>
             </div>
           </header>
 

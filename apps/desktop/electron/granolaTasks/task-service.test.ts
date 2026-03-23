@@ -53,7 +53,7 @@ vi.mock('../../../../packages/execution-ironclaw/src/ironclaw-runtime.js', () =>
 
 import { GranolaTaskService } from './task-service.js';
 import type { GranolaMeeting } from '../../../../packages/granola-pipeline/src/types.js';
-import type { TaskChatMessage, TaskChatTrace } from '../../src/shared/types.js';
+import type { DocsDocument, TaskChatMessage, TaskChatTrace } from '../../src/shared/types.js';
 
 const tempDirs: string[] = [];
 
@@ -2905,6 +2905,72 @@ describe('GranolaTaskService', () => {
     });
     expect(packet.preview.stats).toEqual(expect.arrayContaining(['1 chat source']));
     expect(packet.writeback.chatThreadId).toBe('team-thread:launch-war-room');
+
+    await service.dispose();
+  });
+
+  it('creates a context packet from an explicit docs block range', async () => {
+    const dataDir = await makeTempDir();
+    const document: DocsDocument = {
+      docId: 'doc-range',
+      title: 'Operating brief',
+      section: 'drive',
+      locationLabel: 'Drive / Operating Docs',
+      ownerLabel: 'Motasim Rahmar',
+      createdAt: '2026-03-22T10:00:00.000Z',
+      updatedAt: '2026-03-22T11:00:00.000Z',
+      recentLabel: '11:00 Today',
+      preview: 'Ship the launch note.',
+      favorite: false,
+      shared: false,
+      pinned: false,
+      iconTone: 'blue',
+      breadcrumbs: ['Docs', 'Drive'],
+      blocks: [
+        { id: 'doc-range-h1', type: 'heading', text: 'Launch note' },
+        { id: 'doc-range-p1', type: 'paragraph', text: 'Summarize the latest launch note for the team.' },
+        { id: 'doc-range-p2', type: 'bullet', text: 'Mention what changed since yesterday.' },
+      ],
+    };
+    const docsService = {
+      docsGetDocument: vi.fn(async () => document),
+    } as unknown as ConstructorParameters<typeof GranolaTaskService>[0]['docsService'];
+    const service = new GranolaTaskService({
+      dataDir,
+      allowUnauthenticatedExtraction: true,
+      extractTodosForMeeting: async () => JSON.stringify({ todos: [] }),
+      docsService,
+    });
+
+    await service.init();
+
+    const created = await service.tasksCreateFromContext({
+      origin: 'doc_selection',
+      title: 'Write launch update',
+      objective: 'Turn the selected launch notes into a ship-ready update.',
+      docSelection: {
+        docId: 'doc-range',
+        blockId: 'doc-range-h1',
+        blockIds: ['doc-range-h1', 'doc-range-p2'],
+        mode: 'section',
+      },
+      writeback: {
+        docId: 'doc-range',
+        docTitle: 'Operating brief',
+      },
+    });
+
+    const packet = await service.tasksGetContextPacket(created.todoId);
+
+    expect(packet.origin).toBe('doc_selection');
+    expect(packet.sources[0]).toMatchObject({
+      kind: 'doc',
+      docId: 'doc-range',
+      blockIds: ['doc-range-h1', 'doc-range-p2'],
+      mode: 'section',
+    });
+    expect(packet.preview.stats).toEqual(expect.arrayContaining(['1 linked doc']));
+    expect(packet.writeback.docId).toBe('doc-range');
 
     await service.dispose();
   });

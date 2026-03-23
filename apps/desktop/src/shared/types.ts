@@ -711,6 +711,15 @@ export interface TaskWritebackTarget {
   docSectionHeading: string | null;
 }
 
+export interface TaskWritebackResult {
+  ok: boolean;
+  artifactId?: string;
+  message?: string;
+  chatThreadId?: string;
+  docId?: string;
+  docTitle?: string;
+}
+
 export interface ContextPacket {
   packetId: string;
   linkedTodoId: string;
@@ -745,6 +754,7 @@ export interface TaskCreateFromContextInput {
   docSelection?: {
     docId: string;
     blockId?: string | null;
+    blockIds?: string[];
     mode: DocContextSelectionMode;
   };
   writeback?: Partial<TaskWritebackTarget>;
@@ -788,7 +798,7 @@ export interface GranolaAPI {
   tasksWriteBack(
     todoId: string,
     target: 'chat' | 'doc' | 'followup',
-  ): Promise<{ ok: boolean; artifactId?: string; message?: string }>;
+  ): Promise<TaskWritebackResult>;
   tasksUpdateMetadata(todoId: string, patch: TaskMetadataPatch): Promise<TaskWorkspaceItem>;
   tasksUpdateWorkspacePrefs(patch: TaskWorkspacePrefsPatch): Promise<TaskWorkspacePrefs>;
   tasksConnect(): Promise<{ ok: boolean; needsBrowser: boolean; message?: string }>;

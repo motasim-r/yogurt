@@ -73,6 +73,7 @@ import type {
   TaskAssignee,
   TaskBoardColumn,
   TaskCreateFromContextInput,
+  TaskWritebackResult,
   TaskWritebackTarget,
   TaskWorkspaceItem,
   TaskWorkspacePrefs,
@@ -6179,22 +6180,35 @@ export class GranolaTaskService {
         throw new Error('Docs service is unavailable.');
       }
       const document = await this.docsService.docsGetDocument(input.docSelection.docId);
+      const requestedBlockIds = Array.isArray(input.docSelection.blockIds)
+        ? input.docSelection.blockIds
+            .map((value) => (typeof value === 'string' ? value.trim() : ''))
+            .filter((value, index, values) => value.length > 0 && values.indexOf(value) === index)
+        : [];
       const blockIndex = input.docSelection.blockId
         ? document.blocks.findIndex((block) => block.id === input.docSelection?.blockId)
         : -1;
-      let startIndex = blockIndex >= 0 ? blockIndex : 0;
-      while (startIndex > 0 && document.blocks[startIndex - 1]?.type !== 'heading') {
-        startIndex -= 1;
-      }
-      let endIndex = Math.min(document.blocks.length, startIndex + 12);
-      for (let index = startIndex + 1; index < document.blocks.length; index += 1) {
-        const block = document.blocks[index];
-        if (block?.type === 'heading') {
-          endIndex = index;
-          break;
+      let blocks =
+        requestedBlockIds.length > 0
+          ? requestedBlockIds
+              .map((blockId) => document.blocks.find((block) => block.id === blockId) ?? null)
+              .filter((block): block is NonNullable<typeof block> => Boolean(block))
+          : [];
+      if (blocks.length === 0) {
+        let startIndex = blockIndex >= 0 ? blockIndex : 0;
+        while (startIndex > 0 && document.blocks[startIndex - 1]?.type !== 'heading') {
+          startIndex -= 1;
         }
+        let endIndex = Math.min(document.blocks.length, startIndex + 12);
+        for (let index = startIndex + 1; index < document.blocks.length; index += 1) {
+          const block = document.blocks[index];
+          if (block?.type === 'heading') {
+            endIndex = index;
+            break;
+          }
+        }
+        blocks = document.blocks.slice(startIndex, endIndex);
       }
-      const blocks = document.blocks.slice(startIndex, endIndex);
       const sectionHeading =
         blocks
           .map((block) => (block.type === 'heading' && 'text' in block ? block.text.trim() : ''))
@@ -6374,7 +6388,7 @@ export class GranolaTaskService {
   async tasksWriteBack(
     todoId: string,
     target: 'chat' | 'doc' | 'followup',
-  ): Promise<{ ok: boolean; artifactId?: string; message?: string }> {
+  ): Promise<TaskWritebackResult> {
     const todo = this.findTodo(todoId);
     if (!todo) {
       return {
@@ -6399,13 +6413,8 @@ export class GranolaTaskService {
     }
 
     if (target === 'chat') {
-      const threadId = packet.writeback.chatThreadId;
-      if (!threadId) {
-        return {
-          ok: false,
-          message: 'No chat thread is linked to this task yet.',
-        };
-      }
+      const createdAt = nowIso();
+      const threadId = packet.writeback.chatThreadId || randomUUID();
       const now = nowIso();
       const message: GranolaChatMessage = {
         messageId: randomUUID(),
@@ -6417,20 +6426,30 @@ export class GranolaTaskService {
         thoughtDurationSeconds: null,
       };
       await this.withGranolaChatStateWrite(async () => {
-        const current = this.granolaChatState.threads[threadId];
-        if (!current) {
-          throw new Error(`Chat thread not found: ${threadId}`);
-        }
+        const current = this.granolaChatState.threads[threadId] ?? {
+          threadId,
+          title: createGranolaChatThreadTitle(`Task update · ${todo.title}`),
+          scope: 'all_meetings',
+          createdAt,
+          updatedAt: createdAt,
+          messages: [],
+        };
         this.granolaChatState.threads[threadId] = {
           ...current,
           updatedAt: now,
           messages: [...current.messages, message],
         };
       });
+      if (packet.writeback.chatThreadId !== threadId) {
+        await this.tasksSetWriteback(todoId, {
+          chatThreadId: threadId,
+        });
+      }
       this.emitFeedUpdated(true);
       return {
         ok: true,
         artifactId: message.messageId,
+        chatThreadId: threadId,
       };
     }
 
@@ -6459,6 +6478,8 @@ export class GranolaTaskService {
     return {
       ok: true,
       artifactId: result.version.versionId,
+      docId: result.document.docId,
+      docTitle: result.document.title,
     };
   }
 

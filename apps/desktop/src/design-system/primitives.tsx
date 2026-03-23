@@ -4,6 +4,54 @@ function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ');
 }
 
+type ButtonProps = {
+  children: ReactNode;
+  className?: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  variant?: 'neutral' | 'primary';
+  size?: 'default' | 'compact';
+  icon?: ReactNode;
+  ariaLabel?: string;
+};
+
+export function Button({
+  children,
+  className,
+  onClick,
+  disabled = false,
+  active = false,
+  variant = 'neutral',
+  size = 'default',
+  icon,
+  ariaLabel,
+}: ButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active || undefined}
+      aria-label={ariaLabel}
+      className={cx(
+        'ds-button',
+        variant === 'primary' && 'ds-button--primary',
+        size === 'compact' && 'ds-button--compact',
+        active && 'is-active',
+        className,
+      )}
+    >
+      {icon ? (
+        <span className="ds-button__icon" aria-hidden="true">
+          {icon}
+        </span>
+      ) : null}
+      <span className="ds-button__label">{children}</span>
+    </button>
+  );
+}
+
 type IconButtonProps = {
   ariaLabel: string;
   children: ReactNode;
@@ -11,13 +59,23 @@ type IconButtonProps = {
   outline?: boolean;
   onClick?: () => void;
   active?: boolean;
+  disabled?: boolean;
 };
 
-export function IconButton({ ariaLabel, children, className, outline = false, onClick, active = false }: IconButtonProps) {
+export function IconButton({
+  ariaLabel,
+  children,
+  className,
+  outline = false,
+  onClick,
+  active = false,
+  disabled = false,
+}: IconButtonProps) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-pressed={active}
       aria-label={ariaLabel}
       className={cx('ds-icon-button', outline && 'ds-icon-button--outline', active && 'is-active', className)}
@@ -56,16 +114,24 @@ type ActionPillProps = {
   label: string;
   className?: string;
   onClick?: () => void;
+  disabled?: boolean;
+  variant?: 'neutral' | 'primary';
+  size?: 'default' | 'compact';
 };
 
-export function ActionPill({ icon, label, className, onClick }: ActionPillProps) {
+export function ActionPill({
+  icon,
+  label,
+  className,
+  onClick,
+  disabled = false,
+  variant = 'neutral',
+  size = 'default',
+}: ActionPillProps) {
   return (
-    <button type="button" className={cx('ds-action-pill', className)} onClick={onClick}>
-      <span className="ds-action-pill__icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span>{label}</span>
-    </button>
+    <Button className={cx('ds-action-pill', className)} onClick={onClick} disabled={disabled} variant={variant} size={size} icon={icon}>
+      {label}
+    </Button>
   );
 }
 

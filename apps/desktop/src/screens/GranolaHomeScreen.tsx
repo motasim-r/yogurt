@@ -1833,6 +1833,8 @@ function GranolaChatPane({
   creatingContextTask,
   teamThreads,
   onTeamThreadsChange,
+  openTeamThreadId,
+  onOpenTeamThreadHandled,
 }: {
   sidebar: ReactNode;
   chatHome: GranolaChatHome | null;
@@ -1855,6 +1857,8 @@ function GranolaChatPane({
   creatingContextTask: boolean;
   teamThreads: TeamChatThread[];
   onTeamThreadsChange: Dispatch<SetStateAction<TeamChatThread[]>>;
+  openTeamThreadId: string | null;
+  onOpenTeamThreadHandled: () => void;
 }) {
   const [activeSurface, setActiveSurface] = useState<ChatSurfaceSelection>({ kind: 'ai' });
   const [chatNavigatorQuery, setChatNavigatorQuery] = useState('');
@@ -1868,6 +1872,14 @@ function GranolaChatPane({
     () => (activeSurface.kind === 'team' ? teamThreads.find((thread) => thread.id === activeSurface.threadId) ?? null : null),
     [activeSurface, teamThreads],
   );
+
+  useEffect(() => {
+    if (!openTeamThreadId) {
+      return;
+    }
+    setActiveSurface({ kind: 'team', threadId: openTeamThreadId });
+    onOpenTeamThreadHandled();
+  }, [onOpenTeamThreadHandled, openTeamThreadId]);
 
   const handleSelectAiChat = useCallback(() => {
     setActiveSurface({ kind: 'ai' });
@@ -2084,6 +2096,7 @@ export default function GranolaHomeScreen() {
   const [chatSendElapsedSeconds, setChatSendElapsedSeconds] = useState(0);
   const [chatPendingActionLabel, setChatPendingActionLabel] = useState<string | null>(null);
   const [teamThreads, setTeamThreads] = useState<TeamChatThread[]>(TEAM_CHAT_SEED);
+  const [pendingTeamThreadId, setPendingTeamThreadId] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isReconnectingExecutor, setIsReconnectingExecutor] = useState(false);
@@ -2109,6 +2122,7 @@ export default function GranolaHomeScreen() {
   const [contextPacketLoading, setContextPacketLoading] = useState(false);
   const [contextPacketError, setContextPacketError] = useState<string | null>(null);
   const [isWritingBackTarget, setIsWritingBackTarget] = useState<'chat' | 'doc' | 'followup' | null>(null);
+  const [docsOpenRequest, setDocsOpenRequest] = useState<{ docId: string; token: number } | null>(null);
   const [creatingContextTask, setCreatingContextTask] = useState(false);
   const [executingSuggestionActionId, setExecutingSuggestionActionId] = useState<string | null>(null);
   const [aiStatus, setAIStatus] = useState<CodexAIStatus | null>(null);
@@ -3029,6 +3043,8 @@ export default function GranolaHomeScreen() {
             ),
           );
           setTasksError(null);
+          setPendingTeamThreadId(linkedThreadId);
+          setActiveTab('chat');
           return;
         }
         const result = await granolaClient.tasksWriteBack(selectedTodoId, target);
@@ -3036,6 +3052,18 @@ export default function GranolaHomeScreen() {
           setTasksError(result.message);
         } else {
           setTasksError(null);
+          if (target === 'chat' && result.chatThreadId) {
+            setActiveTab('chat');
+            await fetchChatHome();
+            await fetchChatThread(result.chatThreadId);
+          }
+          if (target === 'doc' && result.docId) {
+            setDocsOpenRequest({
+              docId: result.docId,
+              token: Date.now(),
+            });
+            setActiveTab('docs');
+          }
         }
       } catch (error) {
         setTasksError(error instanceof Error ? error.message : 'Unable to complete write-back.');
@@ -3054,6 +3082,7 @@ export default function GranolaHomeScreen() {
     [
       contextPacket,
       fetchChatHome,
+      fetchChatThread,
       fetchContextPacket,
       fetchTasksFeed,
       fetchThread,
@@ -3308,6 +3337,10 @@ export default function GranolaHomeScreen() {
         creatingContextTask={creatingContextTask}
         teamThreads={teamThreads}
         onTeamThreadsChange={setTeamThreads}
+        openTeamThreadId={pendingTeamThreadId}
+        onOpenTeamThreadHandled={() => {
+          setPendingTeamThreadId(null);
+        }}
       />
     );
   }
@@ -3320,6 +3353,10 @@ export default function GranolaHomeScreen() {
           void handleCreateTaskFromContext(input);
         }}
         creatingContextTask={creatingContextTask}
+        openDocumentRequest={docsOpenRequest}
+        onOpenDocumentRequestHandled={() => {
+          setDocsOpenRequest(null);
+        }}
       />
     );
   }

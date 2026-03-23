@@ -329,6 +329,7 @@ function TaskSuggestionsPanel({
   deck,
   loading,
   pendingActionId,
+  headerActions,
   onRun,
 }: {
   title: string;
@@ -336,6 +337,7 @@ function TaskSuggestionsPanel({
   deck: TaskSuggestionDeck | null;
   loading: boolean;
   pendingActionId: string | null;
+  headerActions?: ReactNode;
   onRun: (input: { phase: TaskSuggestionPhase; actionId: string; editedInstruction?: string | null }) => void;
 }) {
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
@@ -349,19 +351,24 @@ function TaskSuggestionsPanel({
   }, [deck, editingActionId]);
 
   return (
-    <section className="tasks-detail-card tasks-detail-card--quick-actions">
-      <header className="tasks-detail-card__header">
-        <div>
-          <h3>{title}</h3>
-          <p>{description}</p>
-        </div>
-        {loading ? (
-          <span className="tasks-inline-loader" aria-live="polite">
-            <span className="tasks-inline-loader__spinner" aria-hidden="true" />
-            <span>Thinking</span>
-          </span>
-        ) : null}
-      </header>
+      <section className="tasks-detail-card tasks-detail-card--quick-actions">
+        <header className="tasks-detail-card__header">
+          <div>
+            <h3>{title}</h3>
+            <p>{description}</p>
+          </div>
+          {(headerActions || loading) ? (
+            <div className="tasks-detail-card__header-actions">
+              {headerActions}
+              {loading ? (
+                <span className="tasks-inline-loader" aria-live="polite">
+                  <span className="tasks-inline-loader__spinner" aria-hidden="true" />
+                  <span>Thinking</span>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </header>
 
       {loading ? (
         <div className="tasks-suggestion-skeletons" aria-hidden="true">
@@ -417,7 +424,6 @@ function TaskSuggestionsPanel({
                     }}
                   >
                     <span>{action.summary}</span>
-                    {action.reason ? <small>{action.reason}</small> : null}
                   </button>
                 ) : (
                   <div className="tasks-suggestion__editor">
@@ -1445,49 +1451,33 @@ export default function TasksWorkspaceScreen({
                           deck={nextMoveSuggestions}
                           loading={nextMoveSuggestionsLoading}
                           pendingActionId={executingSuggestionActionId}
+                          headerActions={(
+                            <div className="tasks-writeback-tray tasks-writeback-tray--inline">
+                              <button
+                                type="button"
+                                className="tasks-soft-button"
+                                disabled={writebackPendingTarget !== null}
+                                onClick={() => {
+                                  onWriteback('chat');
+                                }}
+                              >
+                                {writebackPendingTarget === 'chat' ? 'Posting…' : 'Post to chat'}
+                              </button>
+                              <button
+                                type="button"
+                                className="tasks-soft-button"
+                                disabled={writebackPendingTarget !== null}
+                                onClick={() => {
+                                  onWriteback('doc');
+                                }}
+                              >
+                                {writebackPendingTarget === 'doc' ? 'Writing…' : 'Write to doc'}
+                              </button>
+                            </div>
+                          )}
                           onRun={onRunSuggestion}
                         />
                       ) : null}
-                      <section className="tasks-detail-card tasks-detail-card--writeback">
-                        <header className="tasks-detail-card__header">
-                          <div>
-                            <h3>Completion tray</h3>
-                            <p>Post the current output back into the system without leaving Yogurt.</p>
-                          </div>
-                        </header>
-                        <div className="tasks-writeback-tray">
-                          <button
-                            type="button"
-                            className="tasks-soft-button"
-                            disabled={writebackPendingTarget !== null || !contextPacket?.writeback.chatThreadId}
-                            onClick={() => {
-                              onWriteback('chat');
-                            }}
-                          >
-                            {writebackPendingTarget === 'chat' ? 'Posting…' : 'Post to chat'}
-                          </button>
-                          <button
-                            type="button"
-                            className="tasks-soft-button"
-                            disabled={writebackPendingTarget !== null}
-                            onClick={() => {
-                              onWriteback('doc');
-                            }}
-                          >
-                            {writebackPendingTarget === 'doc' ? 'Writing…' : 'Write to doc'}
-                          </button>
-                          <button
-                            type="button"
-                            className="tasks-soft-button"
-                            disabled={writebackPendingTarget !== null}
-                            onClick={() => {
-                              onWriteback('followup');
-                            }}
-                          >
-                            {writebackPendingTarget === 'followup' ? 'Drafting…' : 'Draft follow-up'}
-                          </button>
-                        </div>
-                      </section>
                       <section className="tasks-detail-card tasks-detail-card--timeline">
                         <header className="tasks-detail-card__header">
                           <div>
