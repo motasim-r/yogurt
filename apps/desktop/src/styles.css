@@ -317,6 +317,42 @@ svg {
   text-overflow: ellipsis;
 }
 
+.sidebar-space-preview-list {
+  margin: 4px 0 12px 12px;
+  width: 164px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-space-preview {
+  min-height: 28px;
+  border-radius: var(--radius-8);
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(218, 215, 208, 0.74);
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.sidebar-space-preview__label {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.sidebar-space-preview__count {
+  flex: none;
+  color: rgba(218, 215, 208, 0.5);
+  font-size: 11px;
+  line-height: 14px;
+}
+
 .sidebar-footer-tools {
   position: absolute;
   left: 8px;
@@ -1269,6 +1305,9 @@ svg {
 }
 
 .workspace-sidebar__item-copy strong {
+  display: block;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   color: inherit;
   font-size: 13px;
@@ -1280,6 +1319,9 @@ svg {
 }
 
 .workspace-sidebar__item-copy small {
+  display: block;
+  width: 100%;
+  max-width: 100%;
   color: var(--color-text-subtle);
   font-size: 12px;
   line-height: 15px;
@@ -5364,6 +5406,9 @@ svg {
 }
 
 .tasks-nav__item-copy strong {
+  display: block;
+  width: 100%;
+  max-width: 100%;
   color: inherit;
   min-width: 0;
   font-size: 13px;
@@ -5375,6 +5420,8 @@ svg {
 }
 
 .tasks-nav__item-copy small {
+  display: block;
+  width: 100%;
   max-width: 100%;
   color: var(--color-text-subtle);
   font-size: 12px;
@@ -5419,6 +5466,7 @@ svg {
 .tasks-view-toggle {
   border-radius: 12px;
   padding: 3px;
+  gap: 4px;
 }
 
 .tasks-view-toggle button {

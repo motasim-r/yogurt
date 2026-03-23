@@ -65,6 +65,19 @@ const HOME_UPCOMING_FALLBACK: HomeUpcomingMeeting = {
   startsAt: null,
 };
 
+const SIDEBAR_SPACE_PREVIEW_ROWS = {
+  myNotes: [
+    { label: 'Quick captures', count: '18' },
+    { label: 'Research dump', count: '7' },
+    { label: 'Meeting exports', count: '4' },
+  ],
+  motasimHq: [
+    { label: 'Demo prep', count: '6' },
+    { label: 'Product bets', count: '3' },
+    { label: 'Outreach ops', count: '5' },
+  ],
+} as const;
+
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ');
 }
@@ -255,6 +268,17 @@ function GlobalSidebar({
             </span>
             <span>Add folder</span>
           </button>
+          <div className="sidebar-space-preview-list" aria-hidden="true">
+            {SIDEBAR_SPACE_PREVIEW_ROWS.myNotes.map((item) => (
+              <div key={item.label} className="sidebar-space-preview">
+                <span className="sidebar-space-list__icon">
+                  <FolderIcon className="glyph-16" />
+                </span>
+                <span className="sidebar-space-preview__label">{item.label}</span>
+                <span className="sidebar-space-preview__count">{item.count}</span>
+              </div>
+            ))}
+          </div>
         </div>
         <div className="sidebar-space-group">
           <button type="button" className="sidebar-space-root">
@@ -267,6 +291,17 @@ function GlobalSidebar({
             </span>
             <span>Add folder</span>
           </button>
+          <div className="sidebar-space-preview-list" aria-hidden="true">
+            {SIDEBAR_SPACE_PREVIEW_ROWS.motasimHq.map((item) => (
+              <div key={item.label} className="sidebar-space-preview">
+                <span className="sidebar-space-list__icon">
+                  <FolderIcon className="glyph-16" />
+                </span>
+                <span className="sidebar-space-preview__label">{item.label}</span>
+                <span className="sidebar-space-preview__count">{item.count}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
