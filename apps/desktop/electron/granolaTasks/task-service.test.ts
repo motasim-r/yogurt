@@ -2927,7 +2927,7 @@ describe('GranolaTaskService', () => {
       iconTone: 'blue',
       breadcrumbs: ['Docs', 'Drive'],
       blocks: [
-        { id: 'doc-range-h1', type: 'heading', text: 'Launch note' },
+        { id: 'doc-range-h1', type: 'heading', text: 'Launch note', level: 2 },
         { id: 'doc-range-p1', type: 'paragraph', text: 'Summarize the latest launch note for the team.' },
         { id: 'doc-range-p2', type: 'bullet', text: 'Mention what changed since yesterday.' },
       ],

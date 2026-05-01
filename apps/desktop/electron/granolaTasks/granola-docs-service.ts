@@ -8,6 +8,7 @@ import type {
   DocsDisplayMode,
   DocsDocument,
   DocsDocumentSummary,
+  DocsHeadingLevel,
   DocsHome,
   DocsIconTone,
   DocsQuickAction,
@@ -16,6 +17,11 @@ import type {
   DocsTemplate,
   DocsUpdatePatch,
 } from '../../src/shared/types.js';
+import {
+  blockSeedFromExistingBlock,
+  markdownToDocsBlockSeeds,
+  type DocsBlockSeed,
+} from '../../src/shared/docs-markdown.js';
 
 interface DocsRuntimeState {
   loaded: boolean;
@@ -61,7 +67,11 @@ const DOCS_QUICK_ACTIONS: DocsQuickAction[] = [
   },
 ];
 
-function createBlock(type: DocsBlock['type'], text = ''): DocsBlock {
+function createBlock(
+  type: DocsBlock['type'],
+  text = '',
+  options?: { level?: DocsHeadingLevel; checked?: boolean },
+): DocsBlock {
   if (type === 'divider') {
     return {
       id: randomUUID(),
@@ -73,7 +83,15 @@ function createBlock(type: DocsBlock['type'], text = ''): DocsBlock {
       id: randomUUID(),
       type: 'checklist',
       text,
-      checked: false,
+      checked: options?.checked === true,
+    };
+  }
+  if (type === 'heading') {
+    return {
+      id: randomUUID(),
+      type: 'heading',
+      text,
+      level: options?.level ?? 1,
     };
   }
   return {
@@ -81,6 +99,23 @@ function createBlock(type: DocsBlock['type'], text = ''): DocsBlock {
     type,
     text,
   };
+}
+
+function createBlockFromSeed(seed: DocsBlockSeed): DocsBlock {
+  if (seed.type === 'divider') {
+    return createBlock('divider');
+  }
+  if (seed.type === 'heading') {
+    return createBlock('heading', seed.text, { level: seed.level });
+  }
+  if (seed.type === 'checklist') {
+    return createBlock('checklist', seed.text, { checked: seed.checked });
+  }
+  return createBlock(seed.type, seed.text);
+}
+
+function normalizeTaskWritebackBlocks(blocks: DocsBlock[]): DocsBlock[] {
+  return blocks.flatMap((block) => blockSeedFromExistingBlock(block).map((seed) => createBlockFromSeed(seed)));
 }
 
 const DOCS_TEMPLATES: DocsTemplate[] = [
@@ -91,12 +126,12 @@ const DOCS_TEMPLATES: DocsTemplate[] = [
     section: 'home',
     iconTone: 'blue',
     blocks: [
-      createBlock('heading', 'Campaign objective'),
+      createBlock('heading', 'Campaign objective', { level: 2 }),
       createBlock('paragraph', 'Define the single business outcome this launch should move.'),
-      createBlock('heading', 'Narrative'),
+      createBlock('heading', 'Narrative', { level: 2 }),
       createBlock('bullet', 'What changed in the market'),
       createBlock('bullet', 'Why our angle is different'),
-      createBlock('heading', 'Workback'),
+      createBlock('heading', 'Workback', { level: 2 }),
       createBlock('checklist', 'Lock hero message'),
       createBlock('checklist', 'Approve deck'),
     ],
@@ -108,11 +143,11 @@ const DOCS_TEMPLATES: DocsTemplate[] = [
     section: 'drive',
     iconTone: 'amber',
     blocks: [
-      createBlock('heading', 'Wins'),
+      createBlock('heading', 'Wins', { level: 2 }),
       createBlock('bullet', 'Top outcome this week'),
-      createBlock('heading', 'Risks'),
+      createBlock('heading', 'Risks', { level: 2 }),
       createBlock('callout', 'What needs attention before next week'),
-      createBlock('heading', 'Next actions'),
+      createBlock('heading', 'Next actions', { level: 2 }),
       createBlock('checklist', 'Assign owners'),
       createBlock('checklist', 'Share recap'),
     ],
@@ -124,12 +159,12 @@ const DOCS_TEMPLATES: DocsTemplate[] = [
     section: 'wiki',
     iconTone: 'violet',
     blocks: [
-      createBlock('heading', 'Context'),
+      createBlock('heading', 'Context', { level: 2 }),
       createBlock('paragraph', 'Explain why this page exists and who it helps.'),
-      createBlock('heading', 'Decisions'),
+      createBlock('heading', 'Decisions', { level: 2 }),
       createBlock('bullet', 'Decision one'),
       createBlock('bullet', 'Decision two'),
-      createBlock('heading', 'Open questions'),
+      createBlock('heading', 'Open questions', { level: 2 }),
       createBlock('paragraph', 'Capture the unresolved edge cases here.'),
     ],
   },
@@ -218,6 +253,9 @@ function cloneBlocks(blocks: DocsBlock[]): DocsBlock[] {
     if (block.type === 'checklist') {
       return { ...block };
     }
+    if (block.type === 'heading') {
+      return { ...block };
+    }
     return { ...block };
   });
 }
@@ -263,13 +301,6 @@ function snapshotKeyForDocument(document: DocsDocument): string {
   });
 }
 
-function splitIntoParagraphs(value: string): string[] {
-  return value
-    .split(/\n{2,}/)
-    .map((item) => item.replace(/\s+/g, ' ').trim())
-    .filter((item) => item.length > 0);
-}
-
 function normalizeBlockArray(blocks: DocsBlock[]): DocsBlock[] {
   return blocks.map((block) => {
     if (block.type === 'divider') {
@@ -284,6 +315,14 @@ function normalizeBlockArray(blocks: DocsBlock[]): DocsBlock[] {
         type: 'checklist',
         text: typeof block.text === 'string' ? block.text : '',
         checked: block.checked === true,
+      };
+    }
+    if (block.type === 'heading') {
+      return {
+        id: typeof block.id === 'string' && block.id.trim() ? block.id : randomUUID(),
+        type: 'heading',
+        text: typeof block.text === 'string' ? block.text : '',
+        level: block.level === 2 || block.level === 3 ? block.level : 1,
       };
     }
     return {
@@ -324,9 +363,9 @@ function buildSeedDocuments(): Record<string, DocsDocument> {
       createdAt: '2026-03-21T16:58:00.000Z',
       updatedAt: '2026-03-21T17:08:00.000Z',
       blocks: [
-        createBlock('heading', 'Launch target'),
+        createBlock('heading', 'Launch target', { level: 2 }),
         createBlock('paragraph', 'Land a sharper launch story that ties creator traction to trial conversion.'),
-        createBlock('heading', 'Core narrative'),
+        createBlock('heading', 'Core narrative', { level: 2 }),
         createBlock('bullet', 'Lead with the conversion lift'),
         createBlock('bullet', 'Keep creator examples as proof, not the headline'),
       ],
@@ -341,7 +380,7 @@ function buildSeedDocuments(): Record<string, DocsDocument> {
       createdAt: '2026-03-20T10:05:00.000Z',
       updatedAt: '2026-03-21T13:42:00.000Z',
       blocks: [
-        createBlock('heading', 'What the room cares about'),
+        createBlock('heading', 'What the room cares about', { level: 2 }),
         createBlock('bullet', 'Shrink no-show anxiety with clearer proof'),
         createBlock('bullet', 'Show pipeline recovery, not just raw top-of-funnel'),
         createBlock('callout', 'Keep the deck anchored to what changed after onboarding refresh.'),
@@ -356,7 +395,7 @@ function buildSeedDocuments(): Record<string, DocsDocument> {
       createdAt: '2026-03-17T09:12:00.000Z',
       updatedAt: '2026-03-20T08:20:00.000Z',
       blocks: [
-        createBlock('heading', 'Escalation loop'),
+        createBlock('heading', 'Escalation loop', { level: 2 }),
         createBlock('paragraph', 'Document how creator issues move from ops triage to launch review.'),
         createBlock('checklist', 'Weekly creator risk scan'),
         createBlock('checklist', 'Share blockers in launch room'),
@@ -370,10 +409,10 @@ function buildSeedDocuments(): Record<string, DocsDocument> {
       createdAt: '2026-03-19T08:40:00.000Z',
       updatedAt: '2026-03-21T12:11:00.000Z',
       blocks: [
-        createBlock('heading', 'Wins'),
+        createBlock('heading', 'Wins', { level: 2 }),
         createBlock('bullet', 'Trial conversion lift held through week'),
         createBlock('bullet', 'Demo flow tightened for launch review'),
-        createBlock('heading', 'Risks'),
+        createBlock('heading', 'Risks', { level: 2 }),
         createBlock('callout', 'Calendar load is still compressing review time on Thursday.'),
       ],
     }),
@@ -384,7 +423,7 @@ function buildSeedDocuments(): Record<string, DocsDocument> {
       createdAt: '2026-03-18T14:12:00.000Z',
       updatedAt: '2026-03-20T19:24:00.000Z',
       blocks: [
-        createBlock('heading', 'Before export'),
+        createBlock('heading', 'Before export', { level: 2 }),
         createBlock('checklist', 'Lock hero message'),
         createBlock('checklist', 'Confirm proof slide ordering'),
         createBlock('checklist', 'Share cut with Joshim'),
@@ -399,7 +438,7 @@ function buildSeedDocuments(): Record<string, DocsDocument> {
       createdAt: '2026-03-16T11:24:00.000Z',
       updatedAt: '2026-03-18T15:16:00.000Z',
       blocks: [
-        createBlock('heading', 'Candidate signal'),
+        createBlock('heading', 'Candidate signal', { level: 2 }),
         createBlock('paragraph', 'Collect the strongest evidence from trial operations and pipeline storytelling work.'),
       ],
     }),
@@ -730,16 +769,16 @@ export class GranolaDocsService {
           pinned: false,
           iconTone: 'blue',
           breadcrumbs: breadcrumbsForSection('drive'),
-          blocks: [createBlock('heading', input.docSectionHeading?.trim() || 'Task update')],
+          blocks: [createBlock('heading', input.docSectionHeading?.trim() || 'Task update', { level: 2 })],
         });
 
-    const paragraphs = splitIntoParagraphs(input.content);
     const sectionHeading = input.docSectionHeading?.trim() || 'Task update';
+    const writebackBlocks = markdownToDocsBlockSeeds(input.content).map((seed) => createBlockFromSeed(seed));
     const nextBlocks = [
-      ...cloneBlocks(current.blocks),
+      ...normalizeTaskWritebackBlocks(current.blocks),
       createBlock('divider'),
-      createBlock('heading', sectionHeading),
-      ...paragraphs.map((paragraph) => createBlock('paragraph', paragraph)),
+      createBlock('heading', sectionHeading, { level: 2 }),
+      ...writebackBlocks,
     ];
     const nextDocument = normalizeDocumentShape({
       ...current,

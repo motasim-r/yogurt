@@ -1137,8 +1137,6 @@ function AiChatView({
     <div className="granola-chat-ai">
       {!showingThread ? (
         <section className="granola-chat-landing" aria-label="Granola chat landing">
-          <h1>Ask anything</h1>
-
           {warningVisible ? (
             <div className="granola-chat-warning" role="status">
               <p>{chatHome?.warning}</p>
@@ -1166,7 +1164,7 @@ function AiChatView({
               }}
               onKeyDown={handleComposerKeyDown}
               placeholder="What action items do I have?"
-              rows={3}
+              rows={2}
               disabled={chatSending}
             />
 

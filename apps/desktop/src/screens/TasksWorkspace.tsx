@@ -387,44 +387,72 @@ function TaskSuggestionsPanel({
           {deck.actions.map((action) => {
             const isEditing = editingActionId === action.id;
             const isPending = pendingActionId === action.id;
+            const runAction = () => {
+              if (pendingActionId) {
+                return;
+              }
+              onRun({
+                phase: action.phase,
+                actionId: action.id,
+              });
+            };
             return (
-              <article key={action.id} className={cx('tasks-suggestion', action.recommended && 'is-recommended', isPending && 'is-pending')}>
-                <div className="tasks-suggestion__header">
-                  <div className="tasks-suggestion__title-group">
-                    <strong>{action.label}</strong>
-                    {action.recommended ? <span className="tasks-suggestion__badge">Recommended</span> : null}
-                  </div>
-                  {action.editable ? (
-                    <button
-                      type="button"
-                      className="tasks-suggestion__edit"
-                      aria-label={`Edit ${action.label}`}
-                      onClick={() => {
-                        setEditingActionId(action.id);
-                        setEditedInstruction(action.instruction);
-                      }}
-                      disabled={Boolean(pendingActionId)}
-                    >
-                      <PencilIcon className="glyph-14" />
-                    </button>
-                  ) : null}
-                </div>
-
+              <article
+                key={action.id}
+                className={cx(
+                  'tasks-suggestion',
+                  !isEditing && 'tasks-suggestion--actionable',
+                  action.recommended && 'is-recommended',
+                  isPending && 'is-pending',
+                )}
+                role={!isEditing ? 'button' : undefined}
+                tabIndex={!isEditing && !pendingActionId ? 0 : undefined}
+                aria-label={!isEditing ? `Run ${action.label}` : undefined}
+                aria-disabled={!isEditing ? Boolean(pendingActionId) : undefined}
+                onClick={!isEditing ? runAction : undefined}
+                onKeyDown={
+                  !isEditing
+                    ? (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          runAction();
+                        }
+                      }
+                    : undefined
+                }
+              >
                 {!isEditing ? (
-                  <button
-                    type="button"
-                    className="tasks-suggestion__run"
-                    aria-label={`Run ${action.label}`}
-                    disabled={Boolean(pendingActionId)}
-                    onClick={() => {
-                      onRun({
-                        phase: action.phase,
-                        actionId: action.id,
-                      });
-                    }}
-                  >
-                    <span>{action.summary}</span>
-                  </button>
+                  <>
+                    <div className="tasks-suggestion__content">
+                      <div className="tasks-suggestion__header">
+                        <div className="tasks-suggestion__title-group">
+                          <strong>{action.label}</strong>
+                          {action.recommended ? <span className="tasks-suggestion__badge">Recommended</span> : null}
+                        </div>
+                      </div>
+                      <div className="tasks-suggestion__run">
+                        <span>{action.summary}</span>
+                      </div>
+                    </div>
+                    {action.editable ? (
+                      <button
+                        type="button"
+                        className="tasks-suggestion__edit"
+                        aria-label={`Edit ${action.label}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setEditingActionId(action.id);
+                          setEditedInstruction(action.instruction);
+                        }}
+                        disabled={Boolean(pendingActionId)}
+                        onKeyDown={(event) => {
+                          event.stopPropagation();
+                        }}
+                      >
+                        <PencilIcon className="glyph-14" />
+                      </button>
+                    ) : null}
+                  </>
                 ) : (
                   <div className="tasks-suggestion__editor">
                     <textarea

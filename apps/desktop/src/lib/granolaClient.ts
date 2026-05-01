@@ -10,6 +10,7 @@ import type {
   DocsBlock,
   DocsCreateInput,
   DocsDocument,
+  DocsHeadingLevel,
   DocVersionSummary,
   DocsHome,
   DocsTemplate,
@@ -39,13 +40,21 @@ function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function createBrowserDocsBlock(type: DocsBlock['type'], text = ''): DocsBlock {
+function createBrowserDocsBlock(type: DocsBlock['type'], text = '', options?: { level?: DocsHeadingLevel }): DocsBlock {
   const id = `${type}-${Math.random().toString(16).slice(2, 10)}`;
   if (type === 'divider') {
     return { id, type: 'divider' };
   }
   if (type === 'checklist') {
     return { id, type: 'checklist', text, checked: false };
+  }
+  if (type === 'heading') {
+    return {
+      id,
+      type: 'heading',
+      text,
+      level: options?.level ?? 2,
+    };
   }
   return { id, type, text };
 }
@@ -58,7 +67,7 @@ const browserDocsTemplates: DocsTemplate[] = [
     section: 'home',
     iconTone: 'blue',
     blocks: [
-      createBrowserDocsBlock('heading', 'Campaign objective'),
+      createBrowserDocsBlock('heading', 'Campaign objective', { level: 2 }),
       createBrowserDocsBlock('paragraph', 'Define the one thing this launch needs to move.'),
       createBrowserDocsBlock('bullet', 'Lock narrative'),
       createBrowserDocsBlock('bullet', 'Align proof points'),
@@ -71,9 +80,9 @@ const browserDocsTemplates: DocsTemplate[] = [
     section: 'drive',
     iconTone: 'amber',
     blocks: [
-      createBrowserDocsBlock('heading', 'Wins'),
+      createBrowserDocsBlock('heading', 'Wins', { level: 2 }),
       createBrowserDocsBlock('bullet', 'Top outcome'),
-      createBrowserDocsBlock('heading', 'Risks'),
+      createBrowserDocsBlock('heading', 'Risks', { level: 2 }),
       createBrowserDocsBlock('callout', 'What still needs attention'),
     ],
   },

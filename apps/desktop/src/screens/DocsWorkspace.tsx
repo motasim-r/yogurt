@@ -1,4 +1,5 @@
 import {
+  type ClipboardEvent,
   type ComponentPropsWithoutRef,
   type KeyboardEvent,
   type ReactNode,
@@ -34,6 +35,7 @@ import type {
   DocsCreateInput,
   DocsDocument,
   DocsDocumentSummary,
+  DocsHeadingLevel,
   DocsHome,
   DocsHomeFilter,
   DocsSection,
@@ -49,6 +51,11 @@ type SlashMenuState = {
 
 type InsertMenuState = {
   blockId: string;
+};
+
+type BlockInsertTarget = {
+  type: DocsBlock['type'];
+  level?: DocsHeadingLevel;
 };
 
 type TaskContextModalState = {
@@ -71,11 +78,15 @@ const DOC_FILTERS: Array<{ id: DocsHomeFilter; label: string }> = [
   { id: 'favorites', label: 'Favorites' },
 ];
 
-const BLOCK_INSERT_OPTIONS: Array<{ type: DocsBlock['type']; label: string; description: string }> = [
-  { type: 'paragraph', label: 'Paragraph', description: 'Start writing normally' },
-  { type: 'heading', label: 'Heading', description: 'Create a section heading' },
-  { type: 'bullet', label: 'Bullet list', description: 'Capture concise points' },
+const BLOCK_INSERT_OPTIONS: Array<BlockInsertTarget & { label: string; description: string }> = [
+  { type: 'paragraph', label: 'Text', description: 'Start writing normally' },
+  { type: 'heading', level: 1, label: 'Heading 1', description: 'Large section title' },
+  { type: 'heading', level: 2, label: 'Heading 2', description: 'Medium section heading' },
+  { type: 'heading', level: 3, label: 'Heading 3', description: 'Tight subheading' },
+  { type: 'bullet', label: 'Bulleted list', description: 'Capture concise points' },
+  { type: 'numbered', label: 'Numbered list', description: 'Create ordered steps' },
   { type: 'checklist', label: 'Checklist', description: 'Track items to complete' },
+  { type: 'quote', label: 'Quote', description: 'Offset referenced text' },
   { type: 'callout', label: 'Callout', description: 'Highlight a key point' },
   { type: 'divider', label: 'Divider', description: 'Separate sections visually' },
 ];
@@ -91,15 +102,23 @@ function createClientSideId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
 
-function createDocsBlock(type: DocsBlock['type']): DocsBlock {
+function createDocsBlock(target: BlockInsertTarget): DocsBlock {
   const id = createClientSideId('docs-block');
-  if (type === 'divider') {
+  if (target.type === 'divider') {
     return { id, type: 'divider' };
   }
-  if (type === 'checklist') {
+  if (target.type === 'checklist') {
     return { id, type: 'checklist', text: '', checked: false };
   }
-  return { id, type, text: '' };
+  if (target.type === 'heading') {
+    return {
+      id,
+      type: 'heading',
+      text: '',
+      level: target.level ?? 2,
+    };
+  }
+  return { id, type: target.type, text: '' };
 }
 
 function cloneDoc(doc: DocsDocument): DocsDocument {
@@ -188,6 +207,10 @@ function blockTypeLabel(type: DocsBlock['type']): string {
       return 'Heading';
     case 'bullet':
       return 'Bullet';
+    case 'numbered':
+      return 'Numbered list';
+    case 'quote':
+      return 'Quote';
     case 'checklist':
       return 'Checklist';
     case 'callout':
@@ -199,8 +222,84 @@ function blockTypeLabel(type: DocsBlock['type']): string {
   }
 }
 
+function blockPlaceholder(block: DocsBlock): string {
+  switch (block.type) {
+    case 'heading':
+      return block.level === 1 ? 'Heading 1' : block.level === 2 ? 'Heading 2' : 'Heading 3';
+    case 'quote':
+      return 'Quote';
+    case 'callout':
+      return 'Call out something important';
+    case 'checklist':
+      return 'To-do';
+    default:
+      return 'Type / for commands';
+  }
+}
+
+function blockInsertLabel(target: BlockInsertTarget): string {
+  if (target.type === 'heading') {
+    return target.level === 1 ? 'Heading 1' : target.level === 2 ? 'Heading 2' : 'Heading 3';
+  }
+  return blockTypeLabel(target.type);
+}
+
+function markdownShortcutTarget(value: string): (BlockInsertTarget & { text: string; checked?: boolean; insertParagraphAfter?: boolean }) | null {
+  if (/^---$/.test(value.trim())) {
+    return {
+      type: 'divider',
+      text: '',
+      insertParagraphAfter: true,
+    };
+  }
+  const heading3 = value.match(/^###\s+(.*)$/);
+  if (heading3) {
+    return { type: 'heading', level: 3, text: heading3[1] };
+  }
+  const heading2 = value.match(/^##\s+(.*)$/);
+  if (heading2) {
+    return { type: 'heading', level: 2, text: heading2[1] };
+  }
+  const heading1 = value.match(/^#\s+(.*)$/);
+  if (heading1) {
+    return { type: 'heading', level: 1, text: heading1[1] };
+  }
+  const checklist = value.match(/^(?:\[\s\]|\-\s\[\s\])\s+(.*)$/);
+  if (checklist) {
+    return { type: 'checklist', text: checklist[1], checked: false };
+  }
+  const quote = value.match(/^>\s+(.*)$/);
+  if (quote) {
+    return { type: 'quote', text: quote[1] };
+  }
+  const numbered = value.match(/^\d+\.\s+(.*)$/);
+  if (numbered) {
+    return { type: 'numbered', text: numbered[1] };
+  }
+  const bullet = value.match(/^(?:-|\*|\+)\s+(.*)$/);
+  if (bullet) {
+    return { type: 'bullet', text: bullet[1] };
+  }
+  return null;
+}
+
 function blockText(block: DocsBlock): string {
   return 'text' in block ? block.text : '';
+}
+
+function numberedMarkerForBlock(blocks: DocsBlock[], index: number): string | null {
+  const block = blocks[index];
+  if (!block || block.type !== 'numbered') {
+    return null;
+  }
+  let marker = 1;
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (blocks[cursor]?.type !== 'numbered') {
+      break;
+    }
+    marker += 1;
+  }
+  return `${marker}.`;
 }
 
 function getSectionRange(blocks: DocsBlock[], blockId?: string | null): { startIndex: number; endIndex: number } {
@@ -300,6 +399,7 @@ function EditorBlockRow({
   focused,
   selected,
   showChrome,
+  listMarker,
   showSlashMenu,
   slashQuery,
   showInsertMenu,
@@ -309,6 +409,7 @@ function EditorBlockRow({
   onHoverEnd,
   onTextChange,
   onKeyDown,
+  onPaste,
   onToggleChecklist,
   onOpenInsertMenu,
   onSelectInsertType,
@@ -319,6 +420,7 @@ function EditorBlockRow({
   focused: boolean;
   selected: boolean;
   showChrome: boolean;
+  listMarker: string | null;
   showSlashMenu: boolean;
   slashQuery: string;
   showInsertMenu: boolean;
@@ -328,9 +430,10 @@ function EditorBlockRow({
   onHoverEnd: () => void;
   onTextChange: (value: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => void;
+  onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onToggleChecklist: () => void;
   onOpenInsertMenu: () => void;
-  onSelectInsertType: (type: DocsBlock['type']) => void;
+  onSelectInsertType: (target: BlockInsertTarget) => void;
   onRunAsTask: () => void;
   registerInputRef: (node: HTMLTextAreaElement | null) => void;
 }) {
@@ -357,7 +460,7 @@ function EditorBlockRow({
             <button
               type="button"
               className="docs-editor-block__adder"
-              aria-label={`Insert block after ${blockTypeLabel(block.type)}`}
+              aria-label={`Insert block after ${blockInsertLabel({ type: block.type, level: block.type === 'heading' ? block.level : undefined })}`}
               onClick={onOpenInsertMenu}
             >
               <PlusIcon className="glyph-14" />
@@ -374,7 +477,6 @@ function EditorBlockRow({
             onClick={onRunAsTask}
           >
             <PlanPlusIcon className="glyph-14" />
-            <span>Task</span>
           </button>
         ) : null}
 
@@ -384,7 +486,12 @@ function EditorBlockRow({
           </button>
         ) : block.type === 'heading' ? (
           <AutoGrowTextarea
-            className="docs-editor-input docs-editor-input--heading"
+            className={cx(
+              'docs-editor-input docs-editor-input--heading',
+              block.level === 1 && 'is-level-1',
+              block.level === 2 && 'is-level-2',
+              block.level === 3 && 'is-level-3',
+            )}
             value={block.text}
             textareaRef={registerInputRef}
             onFocus={onFocus}
@@ -392,11 +499,20 @@ function EditorBlockRow({
               onTextChange(event.target.value);
             }}
             onKeyDown={onKeyDown}
-            placeholder="Heading"
+            onPaste={onPaste}
+            placeholder={blockPlaceholder(block)}
           />
         ) : (
-          <div className={cx('docs-editor-textarea-shell', block.type === 'callout' && 'is-callout')}>
+          <div
+            className={cx(
+              'docs-editor-textarea-shell',
+              block.type === 'callout' && 'is-callout',
+              block.type === 'quote' && 'is-quote',
+              block.type === 'numbered' && 'is-numbered',
+            )}
+          >
             {block.type === 'bullet' ? <span className="docs-editor-bullet" /> : null}
+            {block.type === 'numbered' ? <span className="docs-editor-numbered">{listMarker}</span> : null}
             {block.type === 'checklist' ? (
               <button
                 type="button"
@@ -410,7 +526,9 @@ function EditorBlockRow({
                 'docs-editor-input',
                 block.type === 'paragraph' && 'docs-editor-input--paragraph',
                 block.type === 'bullet' && 'docs-editor-input--bullet',
+                block.type === 'numbered' && 'docs-editor-input--numbered',
                 block.type === 'checklist' && 'docs-editor-input--checklist',
+                block.type === 'quote' && 'docs-editor-input--quote',
                 block.type === 'callout' && 'docs-editor-input--callout',
               )}
               value={block.text}
@@ -420,7 +538,8 @@ function EditorBlockRow({
                 onTextChange(event.target.value);
               }}
               onKeyDown={onKeyDown}
-              placeholder={block.type === 'callout' ? 'Call out something important' : 'Type / for commands'}
+              onPaste={onPaste}
+              placeholder={blockPlaceholder(block)}
             />
           </div>
         )}
@@ -431,11 +550,14 @@ function EditorBlockRow({
               option.label.toLowerCase().includes(slashQuery.toLowerCase()),
             ).map((option) => (
               <button
-                key={`${block.id}-${option.type}`}
+                key={`${block.id}-${option.type}-${option.level ?? 'base'}`}
                 type="button"
                 className="docs-editor-command-menu__item"
                 onClick={() => {
-                  onSelectInsertType(option.type);
+                  onSelectInsertType({
+                    type: option.type,
+                    level: option.level,
+                  });
                 }}
               >
                 <strong>{option.label}</strong>
@@ -449,11 +571,14 @@ function EditorBlockRow({
           <div className="docs-editor-command-menu docs-editor-command-menu--insert" role="menu">
             {BLOCK_INSERT_OPTIONS.map((option) => (
               <button
-                key={`${block.id}-insert-${option.type}`}
+                key={`${block.id}-insert-${option.type}-${option.level ?? 'base'}`}
                 type="button"
                 className="docs-editor-command-menu__item"
                 onClick={() => {
-                  onSelectInsertType(option.type);
+                  onSelectInsertType({
+                    type: option.type,
+                    level: option.level,
+                  });
                 }}
               >
                 <strong>{option.label}</strong>
@@ -558,7 +683,7 @@ function DocsEditor({
       }
       next.blocks.splice(index, 1);
       if (next.blocks.length === 0) {
-        const replacement = createDocsBlock('paragraph');
+        const replacement = createDocsBlock({ type: 'paragraph' });
         next.blocks.push(replacement);
         onDocumentChange(next);
         setFocusedBlockId(replacement.id);
@@ -578,11 +703,11 @@ function DocsEditor({
   );
 
   const insertBlockAfter = useCallback(
-    (blockId: string, type: DocsBlock['type']) => {
+    (blockId: string, target: BlockInsertTarget) => {
       const next = cloneDoc(document);
       const index = next.blocks.findIndex((block) => block.id === blockId);
       const insertionIndex = index >= 0 ? index + 1 : next.blocks.length;
-      const newBlock = createDocsBlock(type);
+      const newBlock = createDocsBlock(target);
       next.blocks.splice(insertionIndex, 0, newBlock);
       onDocumentChange(next);
       setFocusedBlockId(newBlock.id);
@@ -596,25 +721,33 @@ function DocsEditor({
   );
 
   const transformBlock = useCallback(
-    (blockId: string, type: DocsBlock['type']) => {
+    (blockId: string, target: BlockInsertTarget, nextTextOverride?: string, nextChecked = false) => {
       updateBlock(blockId, (block) => {
         const id = block.id;
         const existingText = 'text' in block ? block.text : '';
-        const nextText = existingText.trimStart().startsWith('/') ? '' : existingText;
-        if (type === 'divider') {
+        const nextText = nextTextOverride ?? (existingText.trimStart().startsWith('/') ? '' : existingText);
+        if (target.type === 'divider') {
           return { id, type: 'divider' };
         }
-        if (type === 'checklist') {
+        if (target.type === 'checklist') {
           return {
             id,
             type: 'checklist',
             text: nextText,
-            checked: block.type === 'checklist' ? block.checked : false,
+            checked: block.type === 'checklist' ? block.checked : nextChecked,
+          };
+        }
+        if (target.type === 'heading') {
+          return {
+            id,
+            type: 'heading',
+            text: nextText,
+            level: target.level ?? (block.type === 'heading' ? block.level : 2),
           };
         }
         return {
           id,
-          type,
+          type: target.type,
           text: nextText,
         };
       });
@@ -622,6 +755,31 @@ function DocsEditor({
       setInsertMenu(null);
     },
     [updateBlock],
+  );
+
+  const applyMarkdownShortcut = useCallback(
+    (blockId: string, value: string) => {
+      const shortcut = markdownShortcutTarget(value);
+      if (!shortcut) {
+        return false;
+      }
+      transformBlock(
+        blockId,
+        {
+          type: shortcut.type,
+          level: shortcut.level,
+        },
+        shortcut.text,
+        shortcut.checked === true,
+      );
+      if (shortcut.insertParagraphAfter) {
+        insertBlockAfter(blockId, { type: 'paragraph' });
+      } else {
+        focusBlock(blockId);
+      }
+      return true;
+    },
+    [focusBlock, insertBlockAfter, transformBlock],
   );
 
   const openTaskContextForBlocks = useCallback(
@@ -674,13 +832,31 @@ function DocsEditor({
     (block: DocsBlock, event: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
-        insertBlockAfter(block.id, 'paragraph');
+        if (block.type === 'bullet' || block.type === 'numbered' || block.type === 'quote') {
+          if (blockText(block).trim().length === 0) {
+            transformBlock(block.id, { type: 'paragraph' });
+            focusBlock(block.id);
+            return;
+          }
+          insertBlockAfter(block.id, { type: block.type });
+          return;
+        }
+        if (block.type === 'checklist') {
+          if (block.text.trim().length === 0) {
+            transformBlock(block.id, { type: 'paragraph' });
+            focusBlock(block.id);
+            return;
+          }
+          insertBlockAfter(block.id, { type: 'checklist' });
+          return;
+        }
+        insertBlockAfter(block.id, { type: 'paragraph' });
         return;
       }
       if (event.key === 'Backspace' && !event.shiftKey && block.type !== 'divider' && blockText(block).length === 0) {
         event.preventDefault();
-        if (block.type === 'heading') {
-          transformBlock(block.id, 'paragraph');
+        if (block.type !== 'paragraph') {
+          transformBlock(block.id, { type: 'paragraph' });
           focusBlock(block.id);
           return;
         }
@@ -695,6 +871,67 @@ function DocsEditor({
     [focusBlock, insertBlockAfter, removeBlock, transformBlock],
   );
 
+  const handleBlockPaste = useCallback(
+    (blockId: string, event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const pastedText = event.clipboardData.getData('text/plain');
+      if (!pastedText.includes('\n')) {
+        return;
+      }
+      event.preventDefault();
+      const lines = pastedText
+        .split(/\r?\n/)
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim().length > 0);
+      if (lines.length === 0) {
+        return;
+      }
+      const next = cloneDoc(document);
+      const blockIndex = next.blocks.findIndex((block) => block.id === blockId);
+      if (blockIndex < 0) {
+        return;
+      }
+      const replacementBlocks = lines.map((line, index) => {
+        const shortcut = markdownShortcutTarget(line);
+        const nextBlock = createDocsBlock(
+          shortcut
+            ? { type: shortcut.type, level: shortcut.level }
+            : { type: 'paragraph' },
+        );
+        if (nextBlock.type === 'divider') {
+          return nextBlock;
+        }
+        if (nextBlock.type === 'checklist') {
+          return {
+            ...nextBlock,
+            text: shortcut?.text ?? line,
+            checked: shortcut?.checked === true,
+          };
+        }
+        if (nextBlock.type === 'heading') {
+          return {
+            ...nextBlock,
+            text: shortcut?.text ?? line,
+            level: shortcut?.level ?? nextBlock.level,
+          };
+        }
+        return {
+          ...nextBlock,
+          text: shortcut?.text ?? line,
+        };
+      });
+      next.blocks.splice(blockIndex, 1, ...replacementBlocks);
+      onDocumentChange(next);
+      const focusTarget = replacementBlocks[replacementBlocks.length - 1]?.id ?? null;
+      setFocusedBlockId(focusTarget);
+      setSelectionAnchorId(null);
+      setSelectionFocusId(null);
+      setSlashMenu(null);
+      setInsertMenu(null);
+      focusBlock(focusTarget);
+    },
+    [document, focusBlock, onDocumentChange],
+  );
+
   const selectionLabel =
     selectedBlockIds.length > 0
       ? `${selectedBlockIds.length} block${selectedBlockIds.length === 1 ? '' : 's'} selected`
@@ -704,18 +941,25 @@ function DocsEditor({
   const taskActionLabel =
     selectedBlockIds.length > 0 ? 'Run selection as task' : focusedBlockId ? 'Run section as task' : 'Run page as task';
   const saveStateLabel =
-    saveState === 'saving' ? 'Saving locally…' : saveState === 'error' ? 'Save failed' : saveState === 'saved' ? 'Saved just now' : 'Saved locally';
+    saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed' : saveState === 'saved' ? 'Saved' : 'Saved';
+  const privacyLabel = document.shared ? 'Shared' : 'Private';
 
   return (
     <section className="docs-editor" aria-label="Docs editor">
       <header className="docs-editor__topbar">
-        <div className="docs-editor__topbar-left">
+        <div className="docs-editor__topbar-leading">
           <button type="button" className="docs-editor__back" onClick={onBack} aria-label="Back to Docs">
             <ChevronLeftIcon className="glyph-16" />
           </button>
+        </div>
+
+        <div className="docs-editor__topbar-heading">
           <div className="docs-editor__crumbs">
-            <span>{document.breadcrumbs.join(' / ')}</span>
-            <small>{saveStateLabel}</small>
+            <span>{document.title || 'Untitled'}</span>
+          </div>
+          <div className="docs-editor__topbar-meta">
+            <small>{privacyLabel}</small>
+            <span className="docs-editor__status">{`Edited ${document.recentLabel}`}</span>
           </div>
         </div>
 
@@ -754,16 +998,6 @@ function DocsEditor({
       <div className="docs-editor__viewport">
         <div className="docs-editor__scroller">
           <article className="docs-editor__canvas">
-            <div className="docs-editor__page-head">
-              <span className={cx('docs-doc-icon docs-editor__page-icon', `is-${document.iconTone}`)}>
-                <FileIcon className="glyph-16" />
-              </span>
-              <div className="docs-editor__page-kicker">
-                <span>{document.section === 'wiki' ? 'Knowledge doc' : 'Working doc'}</span>
-                <small>{selectionLabel}</small>
-              </div>
-            </div>
-
             <AutoGrowTextarea
               className="docs-editor__title"
               value={document.title}
@@ -777,9 +1011,9 @@ function DocsEditor({
             />
 
             <div className="docs-editor__meta">
-              <span>{document.locationLabel}</span>
+              <span>{document.breadcrumbs.join(' / ')}</span>
               <span>{document.ownerLabel}</span>
-              <span>{document.recentLabel}</span>
+              <span>{saveStateLabel}</span>
             </div>
 
             {selectedBlockIds.length > 0 ? (
@@ -799,13 +1033,14 @@ function DocsEditor({
             ) : null}
 
             <div className="docs-editor__blocks">
-              {document.blocks.map((block) => {
+              {document.blocks.map((block, index) => {
                 const showChrome =
                   hoveredBlockId === block.id ||
                   focusedBlockId === block.id ||
                   selectedBlockIdSet.has(block.id) ||
                   slashMenu?.blockId === block.id ||
                   insertMenu?.blockId === block.id;
+                const listMarker = numberedMarkerForBlock(document.blocks, index);
 
                 return (
                   <EditorBlockRow
@@ -814,6 +1049,7 @@ function DocsEditor({
                     focused={focusedBlockId === block.id}
                     selected={selectedBlockIdSet.has(block.id)}
                     showChrome={showChrome}
+                    listMarker={listMarker}
                     showSlashMenu={slashMenu?.blockId === block.id}
                     slashQuery={slashMenu?.blockId === block.id ? slashMenu.query : ''}
                     showInsertMenu={insertMenu?.blockId === block.id}
@@ -841,15 +1077,10 @@ function DocsEditor({
                       setHoveredBlockId((current) => (current === block.id ? null : current));
                     }}
                     onTextChange={(value) => {
-                      updateBlock(block.id, (current) => {
-                        if (current.type === 'divider') {
-                          return current;
-                        }
-                        if (current.type === 'checklist') {
-                          return { ...current, text: value };
-                        }
-                        return { ...current, text: value };
-                      });
+                      if (applyMarkdownShortcut(block.id, value)) {
+                        return;
+                      }
+                      updateBlock(block.id, (current) => ('text' in current ? { ...current, text: value } : current));
                       const trimmed = value.trimStart();
                       if (trimmed.startsWith('/')) {
                         setSlashMenu({
@@ -862,6 +1093,9 @@ function DocsEditor({
                     }}
                     onKeyDown={(event) => {
                       handleBlockKeyDown(block, event);
+                    }}
+                    onPaste={(event) => {
+                      handleBlockPaste(block.id, event);
                     }}
                     onToggleChecklist={() => {
                       updateBlock(block.id, (current) =>
@@ -1416,7 +1650,7 @@ export default function DocsWorkspace({
                             <span className={cx('docs-doc-icon', `is-${document.iconTone}`)}>
                               <FileIcon className="glyph-14" />
                             </span>
-                            <span>{document.title}</span>
+                            <span className="docs-table__title">{document.title}</span>
                           </span>
                           <span>{document.locationLabel}</span>
                           <span>{document.ownerLabel}</span>

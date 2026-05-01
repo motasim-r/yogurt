@@ -560,7 +560,16 @@ export type DocsSection = 'home' | 'drive' | 'wiki';
 export type DocsDisplayMode = 'list' | 'grid';
 export type DocsHomeFilter = 'recent' | 'owned' | 'shared' | 'favorites';
 export type DocsIconTone = 'blue' | 'green' | 'amber' | 'violet' | 'rose' | 'slate';
-export type DocsBlockType = 'paragraph' | 'heading' | 'bullet' | 'checklist' | 'callout' | 'divider';
+export type DocsHeadingLevel = 1 | 2 | 3;
+export type DocsBlockType =
+  | 'paragraph'
+  | 'heading'
+  | 'bullet'
+  | 'numbered'
+  | 'quote'
+  | 'checklist'
+  | 'callout'
+  | 'divider';
 
 export interface DocsSidebarSection {
   id: DocsSection;
@@ -579,7 +588,13 @@ export interface DocsQuickAction {
 export type DocsBlock =
   | {
       id: string;
-      type: 'paragraph' | 'heading' | 'bullet' | 'callout';
+      type: 'heading';
+      text: string;
+      level: DocsHeadingLevel;
+    }
+  | {
+      id: string;
+      type: 'paragraph' | 'bullet' | 'numbered' | 'quote' | 'callout';
       text: string;
     }
   | {

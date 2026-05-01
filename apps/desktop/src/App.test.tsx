@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { markdownToDocsBlockSeeds } from './shared/docs-markdown';
 import type {
   CodexAIStatus,
   ContextPacket,
@@ -21,6 +22,34 @@ import type {
 } from './shared/types';
 
 const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
+
+function makeDocsBlockFromSeed(docId: string, seed: ReturnType<typeof markdownToDocsBlockSeeds>[number], index: number): DocsDocument['blocks'][number] {
+  const baseId = `${docId}-${seed.type}-${Date.now()}-${index}`;
+  if (seed.type === 'divider') {
+    return { id: baseId, type: 'divider' };
+  }
+  if (seed.type === 'heading') {
+    return {
+      id: baseId,
+      type: 'heading',
+      text: seed.text,
+      level: seed.level,
+    };
+  }
+  if (seed.type === 'checklist') {
+    return {
+      id: baseId,
+      type: 'checklist',
+      text: seed.text,
+      checked: seed.checked,
+    };
+  }
+  return {
+    id: baseId,
+    type: seed.type,
+    text: seed.text,
+  };
+}
 
   const {
     state,
@@ -332,7 +361,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
       blocks:
         overrides.blocks ??
         [
-          { id: `${docId}-heading`, type: 'heading', text: 'Launch target' },
+          { id: `${docId}-heading`, type: 'heading', text: 'Launch target', level: 2 },
           { id: `${docId}-p1`, type: 'paragraph', text: 'Shape the launch story around conversion lift.' },
         ],
     };
@@ -368,7 +397,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
         section: 'home',
         iconTone: 'blue',
         blocks: [
-          { id: 'template-heading', type: 'heading', text: 'Campaign objective' },
+          { id: 'template-heading', type: 'heading', text: 'Campaign objective', level: 2 },
           { id: 'template-paragraph', type: 'paragraph', text: 'Define the one thing this launch needs to move.' },
         ],
       },
@@ -379,7 +408,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
         section: 'drive',
         iconTone: 'amber',
         blocks: [
-          { id: 'template-brief-heading', type: 'heading', text: 'Wins' },
+          { id: 'template-brief-heading', type: 'heading', text: 'Wins', level: 2 },
           { id: 'template-brief-paragraph', type: 'paragraph', text: 'Summarize the week here.' },
         ],
       },
@@ -776,7 +805,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
               iconTone: 'amber',
               recentLabel: '17:09 Today',
               blocks: [
-                { id: `${docId}-heading`, type: 'heading', text: 'Wins' },
+                { id: `${docId}-heading`, type: 'heading', text: 'Wins', level: 2 },
                 { id: `${docId}-paragraph`, type: 'paragraph', text: 'Summarize the week here.' },
               ],
             })
@@ -978,6 +1007,16 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
       if (!packet || !todo) {
         return { ok: false, message: 'missing context packet' };
       }
+      const thread = state.threads.get(todoId) ?? [];
+      const latestAssistant = [...thread].reverse().find((message) => message.role === 'assistant' && message.content.trim());
+      const writebackContent = [
+        latestAssistant?.content || todo.publicSummary || todo.description,
+        packet.citations.length > 0 ? '' : null,
+        packet.citations.length > 0 ? 'Context sources:' : null,
+        ...packet.citations.map((citation) => `- ${citation}`),
+      ]
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .join('\n');
       if (target === 'followup') {
         const next = [...(state.threads.get(todoId) ?? [])];
         next.push({
@@ -1014,7 +1053,7 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
           messageId: `${thread.threadId}-assistant-${Date.now()}`,
           threadId: thread.threadId,
           role: 'assistant',
-          content: `## Task update: ${todo.title}\n\n${todo.publicSummary || todo.description}`,
+          content: `## Task update: ${todo.title}\n\n${writebackContent}`,
           createdAt,
           status: 'completed',
           thoughtDurationSeconds: null,
@@ -1045,6 +1084,9 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
           preview: todo.publicSummary || todo.description,
         };
         state.docHistories.set(docId, [...(state.docHistories.get(docId) ?? []), historyEntry]);
+        const nextWritebackBlocks = markdownToDocsBlockSeeds(writebackContent).map((seed, index) =>
+          makeDocsBlockFromSeed(docId, seed, index),
+        );
         const nextDocument: DocsDocument = {
           ...current,
           updatedAt: new Date().toISOString(),
@@ -1052,8 +1094,13 @@ const DISMISSED_WARNING_STORAGE_KEY = 'granola:copilot:dismissed-warnings:v1';
           blocks: [
             ...current.blocks,
             { id: `${docId}-divider-${Date.now()}`, type: 'divider' },
-            { id: `${docId}-heading-${Date.now()}`, type: 'heading', text: packet.writeback.docSectionHeading ?? 'Task update' },
-            { id: `${docId}-paragraph-${Date.now()}`, type: 'paragraph', text: todo.publicSummary || todo.description },
+            {
+              id: `${docId}-heading-${Date.now()}`,
+              type: 'heading',
+              text: packet.writeback.docSectionHeading ?? 'Task update',
+              level: 2,
+            },
+            ...nextWritebackBlocks,
           ],
         };
         state.docsDocuments.set(docId, nextDocument);
@@ -1911,7 +1958,7 @@ describe('App task copilot', () => {
     await user.type(paragraph, '/checklist');
     await user.click(await screen.findByRole('button', { name: /Checklist/i }));
 
-    const checklist = await screen.findByPlaceholderText('Type / for commands');
+    const checklist = await screen.findByPlaceholderText('To-do');
     await user.type(checklist, 'Share the revised story');
 
     await waitFor(() => {
@@ -2041,9 +2088,7 @@ describe('App task copilot', () => {
     render(<App />);
     await openTasksWorkspace(user, { taskTitle: 'Build outreach lead list' });
 
-    const draftArticle = screen.getByText('Draft follow-up', { selector: 'strong' }).closest('article');
-    expect(draftArticle).toBeTruthy();
-    await user.click(within(draftArticle as HTMLElement).getByRole('button', { name: /Run Draft follow-up/i }));
+    await user.click(screen.getByText('Draft follow-up', { selector: 'strong' }));
 
     await waitFor(() => {
       expect(granolaClientMock.tasksExecuteSuggestion).toHaveBeenCalledWith(

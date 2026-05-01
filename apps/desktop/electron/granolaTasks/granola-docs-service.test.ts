@@ -71,6 +71,7 @@ describe('GranolaDocsService', () => {
           id: 'heading-1',
           type: 'heading',
           text: 'Launch narrative',
+          level: 2,
         },
         {
           id: 'check-1',
@@ -99,5 +100,91 @@ describe('GranolaDocsService', () => {
       text: 'Share the revised story',
       checked: true,
     });
+  });
+
+  it('converts markdown task write-back into clean docs blocks', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaDocsService(dataDir);
+
+    await service.init();
+    const result = await service.docsApplyTaskWriteback({
+      taskTitle: 'Charity outreach',
+      content: [
+        '## Outreach summary',
+        '',
+        'I used the finalized **Partnership Inquiry** draft and sent it to `info@brac.net`.',
+        '',
+        '- **Sent to BRAC:** `info@brac.net`',
+        '- **Sent to CARE Bangladesh:** `bgd.info@care.org`',
+        '',
+        '**Suggested next steps**',
+        '1. Send the donation wave',
+        '2. Add follow-up reminders',
+        '',
+        'Context sources:',
+        '- Meeting · New note',
+      ].join('\n'),
+      sourceTaskId: 'todo-1',
+      sourcePacketId: 'packet-1',
+    });
+
+    expect(result.document.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'heading', text: 'Outreach summary' }),
+        expect.objectContaining({
+          type: 'paragraph',
+          text: 'I used the finalized Partnership Inquiry draft and sent it to info@brac.net.',
+        }),
+        expect.objectContaining({ type: 'bullet', text: 'Sent to BRAC: info@brac.net' }),
+        expect.objectContaining({ type: 'bullet', text: 'Sent to CARE Bangladesh: bgd.info@care.org' }),
+        expect.objectContaining({ type: 'heading', text: 'Suggested next steps' }),
+        expect.objectContaining({ type: 'numbered', text: 'Send the donation wave' }),
+        expect.objectContaining({ type: 'numbered', text: 'Add follow-up reminders' }),
+        expect.objectContaining({ type: 'callout', text: 'Context sources:' }),
+      ]),
+    );
+    const textBlocks = result.document.blocks.filter((block) => 'text' in block);
+    expect(textBlocks.every((block) => !block.text.includes('**') && !block.text.includes('`'))).toBe(true);
+  });
+
+  it('cleans previously written markdown paragraphs when appending another task update', async () => {
+    const dataDir = await makeTempDir();
+    const service = new GranolaDocsService(dataDir);
+
+    await service.init();
+    const doc = await service.docsCreate({ section: 'drive' });
+    await service.docsUpdate(doc.docId, {
+      blocks: [
+        {
+          id: 'legacy-heading',
+          type: 'heading',
+          text: 'Task update',
+          level: 2,
+        },
+        {
+          id: 'legacy-paragraph',
+          type: 'paragraph',
+          text: '**Suggested next steps** 1. Send outreach 2. Add reminders',
+        },
+      ],
+    });
+
+    const result = await service.docsApplyTaskWriteback({
+      taskTitle: 'Charity outreach',
+      docId: doc.docId,
+      content: 'Done — outreach sent.',
+      sourceTaskId: 'todo-2',
+      sourcePacketId: 'packet-2',
+    });
+
+    expect(result.document.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'heading', text: 'Suggested next steps' }),
+        expect.objectContaining({ type: 'numbered', text: 'Send outreach' }),
+        expect.objectContaining({ type: 'numbered', text: 'Add reminders' }),
+      ]),
+    );
+    const textBlocks = result.document.blocks.filter((block) => 'text' in block);
+    expect(textBlocks.every((block) => !block.text.includes('**'))).toBe(true);
   });
 });

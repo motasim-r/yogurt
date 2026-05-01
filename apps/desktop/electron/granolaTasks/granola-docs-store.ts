@@ -66,7 +66,15 @@ function normalizeBlock(raw: unknown): DocsBlock | null {
   }
 
   const text = typeof raw.text === 'string' ? raw.text : '';
-  if (type === 'paragraph' || type === 'heading' || type === 'bullet' || type === 'callout') {
+  if (type === 'heading') {
+    return {
+      id,
+      type,
+      text,
+      level: raw.level === 2 || raw.level === 3 ? raw.level : 1,
+    };
+  }
+  if (type === 'paragraph' || type === 'bullet' || type === 'numbered' || type === 'quote' || type === 'callout') {
     return { id, type, text };
   }
   if (type === 'checklist') {
